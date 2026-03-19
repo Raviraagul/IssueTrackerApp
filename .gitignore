@@ -1,0 +1,8 @@
+node_modules/
+.env
+*.env
+python/__pycache__/
+python/existing_tmp.json
+uploads/
+*.xlsx
+*.log

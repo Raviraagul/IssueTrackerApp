@@ -1,0 +1,16 @@
+
+Issue Tracker Website Requirement.
+
+General Description: Need the website to manage, track, and visualize Issue ticket data with a analytic dashboard, list and reports
+
+1) I want the project to be Local Node.js + PostgreSQL + Python (for graph and other data analysis now in dashboard)
+
+2) I want to store the data in my local installed database
+
+3) I want to import the downloaded excel through the website from the list page.
+
+4) Need Reports which can be exported as excel
+
+    - Daily report for Team wise, Application wise, Application and Team wise integrated
+    - Summary Report of the daily report with date range filter
+
