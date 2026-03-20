@@ -7,201 +7,481 @@ const { spawn } = require('child_process');
 const pool = require('../db');
 const { verifyToken, adminOnly } = require('./auth');
 
-// ── File upload config ────────────────────────────────────────────────────────
-const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        const uploadDir = path.join(__dirname, '../../python/uploads');
-        fs.mkdirSync(uploadDir, { recursive: true });
-        cb(null, uploadDir);
-    },
-    filename: (req, file, cb) => {
-        cb(null, `import_${Date.now()}_${file.originalname}`);
-    },
-});
+// ── Multer setup ──────────────────────────────────────────────────────────────
+const uploadDir = path.join(__dirname, '../../python/uploads');
+if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 
-const upload = multer({
-    storage,
-    fileFilter: (req, file, cb) => {
-        if (file.mimetype.includes('spreadsheet') ||
-            file.originalname.match(/\.(xlsx|xls)$/)) {
-            cb(null, true);
-        } else {
-            cb(new Error('Only Excel files (.xlsx, .xls) are allowed'));
-        }
+const storage = multer.diskStorage({
+    destination: (req, file, cb) => cb(null, uploadDir),
+    filename: (req, file, cb) => {
+        const ts = Date.now();
+        const safe = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
+        cb(null, `${ts}_${safe}`);
     },
-    limits: { fileSize: 20 * 1024 * 1024 }, // 20MB max
 });
+const upload = multer({ storage });
 
 // ── POST /api/import/upload ───────────────────────────────────────────────────
-router.post('/upload', verifyToken, adminOnly, upload.single('file'), async (req, res) => {
-    if (!req.file)
-        return res.status(400).json({ error: 'No file uploaded.' });
+router.post('/upload', verifyToken, adminOnly,
+    upload.single('file'), async (req, res) => {
 
-    const { snapshot_date, snapshot_time = 'AM' } = req.body;
-    if (!snapshot_date)
-        return res.status(400).json({ error: 'snapshot_date is required.' });
+        // const { snapshot_date, snapshot_time = 'AM' } = req.body;
+        const { snapshot_date } = req.body;
+        const filePath = req.file?.path;
 
-    const filePath = req.file.path;
-    const pythonDir = path.join(__dirname, '../../python');
-
-    // Call Python script to parse + process the Excel
-    const python = spawn('python', [
-        path.join(pythonDir, 'import_excel.py'),
-        '--file', filePath,
-        '--date', snapshot_date,
-        '--time', snapshot_time,
-    ]);
-
-    let output = '';
-    let errors = '';
-
-    python.stdout.on('data', (data) => { output += data.toString(); });
-    python.stderr.on('data', (data) => { errors += data.toString(); });
-
-    python.on('close', async (code) => {
-        // Clean up uploaded file
-        try { fs.unlinkSync(filePath); } catch { }
-
-        if (code !== 0) {
-            console.error('Python error:', errors);
-            return res.status(500).json({
-                error: 'Failed to process Excel file.',
-                details: errors.split('\n').filter(Boolean).slice(-3).join(' | '),
-            });
-        }
+        if (!filePath)
+            return res.status(400).json({ error: 'No file uploaded.' });
+        if (!snapshot_date)
+            return res.status(400).json({ error: 'snapshot_date is required.' });
 
         try {
-            const result = JSON.parse(output);
+            // ── Fetch existing tickets from DB to pass to Python ─────────────────
+            const existingRows = await pool.query(`
+      SELECT ticket_no, status_norm, status_raw,
+             status_changed_date, assigned_to,
+             fixed_status, comments, fixed_date
+      FROM tickets
+    `);
 
-            // Save to DB using the parsed result
-            await saveImportToDB(result, req.user.id, snapshot_date, snapshot_time, req.file.originalname);
-
-            res.json({
-                success: true,
-                message: 'Import completed successfully',
-                stats: result.stats,
+            const existingMap = {};
+            existingRows.rows.forEach(r => {
+                existingMap[r.ticket_no] = {
+                    status_norm: r.status_norm,
+                    status_raw: r.status_raw,
+                    status_changed_date: r.status_changed_date
+                        ? r.status_changed_date.toISOString().split('T')[0]
+                        : null,
+                    assigned_to: r.assigned_to,
+                    fixed_status: r.fixed_status,
+                    comments: r.comments,
+                    fixed_date: r.fixed_date
+                        ? r.fixed_date.toISOString().split('T')[0]
+                        : null,
+                };
             });
+
+            // ── Spawn Python ──────────────────────────────────────────────────────
+            const pythonScript = path.join(__dirname, '../../python/import_excel.py');
+            const result = await new Promise((resolve, reject) => {
+                /* const py = spawn('python', [
+                    pythonScript,
+                    '--file', filePath,
+                    '--date', snapshot_date,
+                    // '--time', snapshot_time,
+                    '--existing', JSON.stringify(existingMap),
+                ]); */
+
+                // Write existingMap to a temp file instead of passing as CLI arg
+                const tmpFile = path.join(__dirname, '../../python/existing_tmp.json');
+                fs.writeFileSync(tmpFile, JSON.stringify(existingMap));
+
+                const py = spawn('python', [
+                    pythonScript,
+                    '--file', filePath,
+                    '--date', snapshot_date,
+                    '--existing-file', tmpFile,
+                ]);
+
+                let stdout = '';
+                let stderr = '';
+                py.stdout.on('data', d => stdout += d.toString());
+                py.stderr.on('data', d => stderr += d.toString());
+                py.on('close', code => {
+                    // Clean up temp file after Python finishes
+                    try { fs.unlinkSync(tmpFile); } catch (_) { }
+                    if (code !== 0) {
+                        reject(new Error(stderr || 'Python script failed'));
+                    } else {
+                        try {
+                            resolve(JSON.parse(stdout));
+                        } catch {
+                            reject(new Error('Failed to parse Python output'));
+                        }
+                    }
+                });
+            });
+
+            // const { tickets, archived, changes, snapshots, stats } = result;
+            const { tickets, changes, history, missing } = result;
+            console.log('New tickets from Python:', tickets.filter(t => t.sync_status === 'New').map(t => t.ticket_no));
+            // ── Save to DB in a transaction ───────────────────────────────────────
+            const client = await pool.connect();
+            try {
+                await client.query('BEGIN');
+
+                let newCount = 0;
+                let updatedCount = 0;
+
+                for (const t of tickets) {
+                    const existing = existingMap[t.ticket_no];
+
+                    if (!existing) {
+                        // New ticket
+                        await client.query(`
+                        INSERT INTO tickets (
+                            ticket_no, date, company, product_name, platform, team,
+                            module, sub_module, issue_description, priority,
+                            status_raw, status_norm, assigned_to, comments,
+                            fixed_status, fixed_date, status_changed_date,
+                            last_seen_date, sync_status, first_seen, last_updated
+                        ) VALUES (
+                            $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
+                            $11,$12,$13,$14,$15,$16,$17,$18,$19,NOW(),NOW()
+                        )
+                        `, [
+                            t.ticket_no, t.date, t.company, t.product_name, t.platform,
+                            t.team, t.module, t.sub_module, t.issue_description, t.priority,
+                            t.status_raw, t.status_norm, t.assigned_to, t.comments,
+                            t.fixed_status, t.fixed_date, t.status_changed_date,
+                            t.last_seen_date, 'New',
+                        ]);
+                        newCount++;
+                    } else {
+                        // Update existing
+                        await client.query(`
+                        UPDATE tickets SET
+                            date=$2, company=$3, product_name=$4, platform=$5,
+                            team=$6, module=$7, sub_module=$8, issue_description=$9,
+                            priority=$10, status_raw=$11, status_norm=$12,
+                            assigned_to=$13, comments=$14, fixed_status=$15,
+                            fixed_date=$16, status_changed_date=$17,
+                            last_seen_date=$18,
+                            sync_status='Updated', last_updated=NOW()
+                        WHERE ticket_no=$1
+                        `, [
+                            t.ticket_no, t.date, t.company, t.product_name, t.platform,
+                            t.team, t.module, t.sub_module, t.issue_description, t.priority,
+                            t.status_raw, t.status_norm, t.assigned_to, t.comments,
+                            t.fixed_status, t.fixed_date, t.status_changed_date,
+                            t.last_seen_date,
+                        ]);
+                        updatedCount++;
+                    }
+                }
+
+                // Archive missing tickets
+                /* for (const ticket_no of missing) {
+                    const row = await client.query(
+                        'SELECT * FROM tickets WHERE ticket_no=$1', [ticket_no]
+                    );
+                    if (row.rows.length) {
+                        await client.query(`
+                            INSERT INTO archive SELECT * FROM tickets WHERE ticket_no=$1
+                        `, [ticket_no]);
+                        await client.query(
+                            'DELETE FROM tickets WHERE ticket_no=$1', [ticket_no]
+                        );
+                    }
+                } */
+
+                // Save change history
+                for (const c of changes) {
+                    await client.query(`
+                    INSERT INTO change_history
+                        (ticket_no, team, product, field_name, old_value, new_value, change_type)
+                    VALUES ($1,$2,$3,$4,$5,$6,$7)
+                    `, [
+                        c.ticket_no, c.team, c.product,
+                        c.field_name, c.old_value, c.new_value, c.change_type,
+                    ]);
+                }
+
+                // Save snapshots
+                /* for (const s of snapshots) {
+                    await client.query(`
+                    INSERT INTO report_snapshots (
+                        snapshot_date, snapshot_time, product_name, team,
+                        yet_to_start, in_progress, completed_dev,
+                        pre_production, live_move, total_active
+                    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+                    ON CONFLICT (snapshot_date, snapshot_time, product_name, team)
+                    DO UPDATE SET
+                        yet_to_start=$5, in_progress=$6, completed_dev=$7,
+                        pre_production=$8, live_move=$9, total_active=$10
+                    `, [
+                        s.snapshot_date, s.snapshot_time, s.product_name, s.team,
+                        s.yet_to_start, s.in_progress, s.completed_dev,
+                        s.pre_production, s.live_move, s.total_active,
+                    ]);
+                } */
+
+                // Save status history
+                for (const h of history) {
+                    await client.query(`
+                        INSERT INTO ticket_status_history
+                            (ticket_no, old_status, new_status, raw_status,
+                            changed_date, method, changed_by)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7)
+                    `, [
+                        h.ticket_no, h.old_status, h.new_status, h.raw_status || null,
+                        h.changed_date, h.method, h.changed_by,
+                    ]);
+                }
+                // Save import log
+                /* await client.query(`
+                    INSERT INTO import_log
+                    (filename, snapshot_date, snapshot_time, imported_by,
+                    new_tickets, updated_tickets, archived_tickets, missing_tickets)
+                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+                `, [
+                    req.file.originalname, snapshot_date, snapshot_time,
+                    req.user.id, newCount, updatedCount, 0, archived.length,
+                ]); */
+
+                // Recompute snapshot for this import date
+                await computeSnapshot(client, snapshot_date);
+                await client.query(`
+                    INSERT INTO import_log
+                    (filename, snapshot_date, imported_by,
+                    new_tickets, updated_tickets, missing_tickets)
+                    VALUES ($1,$2,$3,$4,$5,$6)
+                `, [
+                    req.file.originalname, snapshot_date,
+                    req.user.id, newCount, updatedCount, missing.length,
+                ]);
+
+                await client.query('COMMIT');
+
+                res.json({
+                    message: 'Import successful',
+                    stats: {
+                        new: newCount,
+                        updated: updatedCount,
+                        missing: missing.length, // archived.length,
+                        field_changes: changes.length,
+                    },
+                });
+
+            } catch (err) {
+                await client.query('ROLLBACK');
+                throw err;
+            } finally {
+                client.release();
+            }
+
         } catch (err) {
-            console.error('Save error:', err.message);
-            res.status(500).json({ error: 'Failed to save import data.', details: err.message });
+            res.status(500).json({ error: err.message || 'Failed to process Excel file.' });
+        } finally {
+            if (filePath && fs.existsSync(filePath)) fs.unlinkSync(filePath);
         }
     });
-});
-
-// ── Save parsed data into PostgreSQL ─────────────────────────────────────────
-async function saveImportToDB(result, userId, snapshotDate, snapshotTime, filename) {
-    const client = await pool.connect();
-    try {
-        await client.query('BEGIN');
-
-        // 1. Upsert tickets (insert new, update existing)
-        for (const t of result.tickets || []) {
-            await client.query(`
-        INSERT INTO tickets (
-          ticket_no, date, company, product_name, platform, team,
-          module, sub_module, issue_description, priority,
-          status_raw, status_norm, assigned_to, comments,
-          fixed_status, fixed_date, sync_status, last_updated
-        ) VALUES (
-          $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
-          $11,$12,$13,$14,$15,$16,$17,NOW()
-        )
-        ON CONFLICT (ticket_no) DO UPDATE SET
-          status_raw    = EXCLUDED.status_raw,
-          status_norm   = EXCLUDED.status_norm,
-          assigned_to   = EXCLUDED.assigned_to,
-          comments      = EXCLUDED.comments,
-          fixed_status  = EXCLUDED.fixed_status,
-          fixed_date    = EXCLUDED.fixed_date,
-          last_updated  = NOW(),
-          sync_status   = 'Updated'
-      `, [
-                t.ticket_no, t.date, t.company, t.product_name, t.platform, t.team,
-                t.module, t.sub_module, t.issue_description, t.priority,
-                t.status_raw, t.status_norm, t.assigned_to, t.comments,
-                t.fixed_status, t.fixed_date || null, t.sync_status || 'New',
-            ]);
-        }
-
-        // 2. Archive missing tickets
-        for (const t of result.archived || []) {
-            // Remove from tickets
-            await client.query('DELETE FROM tickets WHERE ticket_no = $1', [t.ticket_no]);
-            // Add to archive
-            await client.query(`
-        INSERT INTO archive (
-          ticket_no, date, company, product_name, platform, team,
-          module, issue_description, priority, status_raw, status_norm,
-          archived_at, archive_reason
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW(),$12)
-        ON CONFLICT DO NOTHING
-      `, [
-                t.ticket_no, t.date, t.company, t.product_name, t.platform, t.team,
-                t.module, t.issue_description, t.priority, t.status_raw, t.status_norm,
-                'Removed from SharePoint Excel',
-            ]);
-        }
-
-        // 3. Log field changes
-        for (const c of result.changes || []) {
-            await client.query(`
-        INSERT INTO change_history
-          (ticket_no, team, product, field_name, old_value, new_value, changed_at, change_type)
-        VALUES ($1,$2,$3,$4,$5,$6,NOW(),$7)
-      `, [c.ticket_no, c.team, c.product, c.field_name,
-            c.old_value, c.new_value, c.change_type]);
-        }
-
-        // 4. Save report snapshot
-        for (const snap of result.snapshots || []) {
-            await client.query(`
-        INSERT INTO report_snapshots (
-          snapshot_date, snapshot_time, product_name, team,
-          pre_production, yet_to_start, in_progress,
-          completed_dev, total_active
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-      `, [
-                snapshotDate, snapshotTime, snap.product_name, snap.team,
-                snap.pre_production, snap.yet_to_start, snap.in_progress,
-                snap.completed_dev, snap.total_active,
-            ]);
-        }
-
-        // 5. Log the import
-        await client.query(`
-      INSERT INTO import_log
-        (filename, snapshot_date, snapshot_time, imported_by,
-         new_tickets, updated_tickets, archived_tickets, field_changes)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-    `, [
-            filename, snapshotDate, snapshotTime, userId,
-            result.stats.new, result.stats.updated,
-            result.stats.archived, result.stats.field_changes,
-        ]);
-
-        await client.query('COMMIT');
-    } catch (err) {
-        await client.query('ROLLBACK');
-        throw err;
-    } finally {
-        client.release();
-    }
-}
 
 // ── GET /api/import/logs ──────────────────────────────────────────────────────
 router.get('/logs', verifyToken, async (req, res) => {
     try {
         const result = await pool.query(`
-      SELECT il.*, u.name AS imported_by_name
-      FROM import_log il
-      LEFT JOIN users u ON il.imported_by = u.id
-      ORDER BY il.imported_at DESC
-      LIMIT 50
-    `);
+            SELECT il.*, u.name as imported_by_name
+            FROM import_log il
+            LEFT JOIN users u ON il.imported_by = u.id
+            ORDER BY il.imported_at DESC
+            LIMIT 50
+        `);
         res.json(result.rows);
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
+
+
+// ── Compute and save snapshot for a given date ────────────────────────────────
+// Called after every import (and later after every UI status edit)
+// Reconstructs the state of all tickets as of the given date from history
+
+/* async function computeSnapshot(client, date) {
+
+    // Get latest status of every ticket as of this date
+    const statusResult = await client.query(`
+        SELECT DISTINCT ON (h.ticket_no)
+            h.ticket_no,
+            h.new_status,
+            t.product_name,
+            t.team
+        FROM ticket_status_history h
+        JOIN tickets t ON t.ticket_no = h.ticket_no
+        WHERE h.changed_date <= $1
+        ORDER BY h.ticket_no, h.changed_date DESC, h.created_at DESC
+    `, [date]);
+
+    // Get all known product+team combos
+    const combosResult = await client.query(`
+        SELECT DISTINCT product_name, team FROM tickets
+    `);
+
+    // Initialize grid with zeros for every product+team combo
+    const grid = {};
+    combosResult.rows.forEach(c => {
+        const key = `${c.product_name}_${c.team}`;
+        grid[key] = {
+            product_name: c.product_name,
+            team: c.team,
+            yet_to_start: 0,
+            in_progress: 0,
+            completed_dev: 0,
+            pre_production: 0,
+            live_move: 0,
+            closed: 0,
+            total_active: 0,
+        };
+    });
+
+    // Count tickets per status per product+team
+    statusResult.rows.forEach(r => {
+        const key = `${r.product_name}_${r.team}`;
+        if (!grid[key]) return;
+        const g = grid[key];
+        if (r.new_status === 'Yet to Start (Dev)') { g.yet_to_start++; g.total_active++; }
+        else if (r.new_status === 'In-Progress (Dev)') { g.in_progress++; g.total_active++; }
+        else if (r.new_status === 'Completed (Dev)') { g.completed_dev++; g.total_active++; }
+        else if (r.new_status === 'Pre Production') { g.pre_production++; g.total_active++; }
+        else if (r.new_status === 'Fixed') { g.live_move++; }
+        else if (r.new_status === 'Closed') { g.closed++; }
+    });
+
+    // Count new tickets raised ON this exact date
+    const newResult = await client.query(`
+        SELECT product_name, team, COUNT(*) as cnt
+        FROM tickets
+        WHERE date = $1
+        GROUP BY product_name, team
+    `, [date]);
+
+    const newMap = {};
+    newResult.rows.forEach(r => {
+        newMap[`${r.product_name}_${r.team}`] = parseInt(r.cnt);
+    });
+
+    // Upsert each product+team combo into report_snapshots
+    for (const g of Object.values(grid)) {
+        const key = `${g.product_name}_${g.team}`;
+        await client.query(`
+            INSERT INTO report_snapshots (
+                snapshot_date, product_name, team,
+                yet_to_start, in_progress, completed_dev,
+                pre_production, live_move, closed,
+                new_tickets, total_active
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+            ON CONFLICT (snapshot_date, product_name, team)
+            DO UPDATE SET
+                yet_to_start   = $4,
+                in_progress    = $5,
+                completed_dev  = $6,
+                pre_production = $7,
+                live_move      = $8,
+                closed         = $9,
+                new_tickets    = $10,
+                total_active   = $11
+        `, [
+            date,
+            g.product_name, g.team,
+            g.yet_to_start, g.in_progress, g.completed_dev,
+            g.pre_production, g.live_move, g.closed,
+            newMap[key] || 0,
+            g.total_active,
+        ]);
+    }
+} */
+
+async function computeSnapshot(client, date) {
+
+    // Get latest status of every ticket as of this date
+    // Uses DISTINCT ON to get the most recent history row ≤ date per ticket
+    // Falls back to ticket's current status_norm if no history row exists yet
+    const statusResult = await client.query(`
+        SELECT
+            t.ticket_no,
+            t.product_name,
+            t.team,
+            COALESCE(h.new_status, t.status_norm) AS current_status
+        FROM tickets t
+        LEFT JOIN LATERAL (
+            SELECT new_status
+            FROM ticket_status_history
+            WHERE ticket_no = t.ticket_no
+              AND changed_date <= $1
+            ORDER BY changed_date DESC, created_at DESC
+            LIMIT 1
+        ) h ON true
+        WHERE t.status_norm IS NOT NULL
+    `, [date]);
+
+    // Get all known product+team combos
+    const combosResult = await client.query(`
+        SELECT DISTINCT product_name, team FROM tickets
+    `);
+
+    // Initialize grid with zeros for every product+team combo
+    const grid = {};
+    combosResult.rows.forEach(c => {
+        const key = `${c.product_name}_${c.team}`;
+        grid[key] = {
+            product_name: c.product_name,
+            team: c.team,
+            yet_to_start: 0,
+            in_progress: 0,
+            completed_dev: 0,
+            pre_production: 0,
+            live_move: 0,
+            closed: 0,
+            total_active: 0,
+        };
+    });
+
+    // Count tickets per status per product+team
+    statusResult.rows.forEach(r => {
+        const key = `${r.product_name}_${r.team}`;
+        if (!grid[key]) return;
+        const g = grid[key];
+        const s = r.current_status;
+        if (s === 'Yet to Start (Dev)') { g.yet_to_start++; g.total_active++; }
+        else if (s === 'In-Progress (Dev)') { g.in_progress++; g.total_active++; }
+        else if (s === 'Completed (Dev)') { g.completed_dev++; g.total_active++; }
+        else if (s === 'Pre Production') { g.pre_production++; g.total_active++; }
+        else if (s === 'Fixed') { g.live_move++; }
+        else if (s === 'Closed') { g.closed++; }
+    });
+
+    // Count new tickets raised ON this exact date
+    const newResult = await client.query(`
+        SELECT product_name, team, COUNT(*) as cnt
+        FROM tickets
+        WHERE date = $1
+        GROUP BY product_name, team
+    `, [date]);
+
+    const newMap = {};
+    newResult.rows.forEach(r => {
+        newMap[`${r.product_name}_${r.team}`] = parseInt(r.cnt);
+    });
+
+    // Upsert each product+team combo into report_snapshots
+    for (const g of Object.values(grid)) {
+        const key = `${g.product_name}_${g.team}`;
+        await client.query(`
+            INSERT INTO report_snapshots (
+                snapshot_date, product_name, team,
+                yet_to_start, in_progress, completed_dev,
+                pre_production, live_move, closed,
+                new_tickets, total_active
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+            ON CONFLICT (snapshot_date, product_name, team)
+            DO UPDATE SET
+                yet_to_start   = $4,
+                in_progress    = $5,
+                completed_dev  = $6,
+                pre_production = $7,
+                live_move      = $8,
+                closed         = $9,
+                new_tickets    = $10,
+                total_active   = $11
+        `, [
+            date,
+            g.product_name, g.team,
+            g.yet_to_start, g.in_progress, g.completed_dev,
+            g.pre_production, g.live_move, g.closed,
+            newMap[key] || 0,
+            g.total_active,
+        ]);
+    }
+}
 
 module.exports = router;

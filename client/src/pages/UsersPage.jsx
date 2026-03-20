@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { getUsers, createUser, updateUser, resetUserPassword } from '../api';
-import { UserPlus, Shield, Eye, EyeOff, Lock } from 'lucide-react';
+import { UserPlus, Shield, Eye, EyeOff, Lock, Users } from 'lucide-react';
 import Select from '../components/Select';
 
 function Modal({ title, onClose, children }) {
@@ -31,6 +31,32 @@ const inputCls = `w-full px-3 py-2 rounded-lg border border-gray-300
   dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900
   dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500`;
 
+const ROLE_OPTIONS = [
+    { value: 'viewer', label: 'Viewer' },
+    { value: 'editor', label: 'Editor' },
+    { value: 'admin', label: 'Admin' },
+];
+
+const TEAM_OPTIONS = [
+    { value: 'API', label: 'API' },
+    { value: 'Web', label: 'Web' },
+    { value: 'App', label: 'App' },
+    { value: 'Support', label: 'Support' },
+];
+
+const ROLE_COLORS = {
+    admin: 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400',
+    editor: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400',
+    viewer: 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300',
+};
+
+const TEAM_COLORS = {
+    API: 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-400',
+    Web: 'bg-cyan-100 text-cyan-700 dark:bg-cyan-900/30 dark:text-cyan-400',
+    App: 'bg-pink-100 text-pink-700 dark:bg-pink-900/30 dark:text-pink-400',
+    Support: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400',
+};
+
 export default function UsersPage() {
     const [users, setUsers] = useState([]);
     const [loading, setLoading] = useState(true);
@@ -45,11 +71,13 @@ export default function UsersPage() {
     const [addEmail, setAddEmail] = useState('');
     const [addPwd, setAddPwd] = useState('');
     const [addRole, setAddRole] = useState('viewer');
+    const [addTeam, setAddTeam] = useState('');
     const [showPwd, setShowPwd] = useState(false);
 
     // Edit form
     const [editName, setEditName] = useState('');
     const [editRole, setEditRole] = useState('viewer');
+    const [editTeam, setEditTeam] = useState('');
     const [editActive, setEditActive] = useState(true);
 
     // Reset form
@@ -73,10 +101,17 @@ export default function UsersPage() {
             setError('All fields are required.'); return;
         }
         try {
-            await createUser({ name: addName, email: addEmail, password: addPwd, role: addRole });
+            await createUser({
+                name: addName,
+                email: addEmail,
+                password: addPwd,
+                role: addRole,
+                team: addRole === 'admin' ? null : (addTeam || null),
+            });
             setSuccess('User created successfully!');
             setShowAdd(false);
-            setAddName(''); setAddEmail(''); setAddPwd(''); setAddRole('viewer');
+            setAddName(''); setAddEmail(''); setAddPwd('');
+            setAddRole('viewer'); setAddTeam('');
             fetchUsers();
             setTimeout(() => setSuccess(''), 3000);
         } catch (err) {
@@ -88,7 +123,10 @@ export default function UsersPage() {
         setError('');
         try {
             await updateUser(editing.id, {
-                name: editName, role: editRole, is_active: editActive
+                name: editName,
+                role: editRole,
+                team: editRole === 'admin' ? null : (editTeam || null),
+                is_active: editActive,
             });
             setSuccess('User updated successfully!');
             setEditing(null);
@@ -119,6 +157,7 @@ export default function UsersPage() {
         setEditing(user);
         setEditName(user.name);
         setEditRole(user.role);
+        setEditTeam(user.team || '');
         setEditActive(user.is_active);
         setError('');
     };
@@ -163,19 +202,47 @@ export default function UsersPage() {
                                 </button>
                             </div>
                         </div>
-                        <div className="space-y-1.5">
-                            <label className="block text-sm font-medium text-gray-700
-                                 dark:text-gray-300">Role</label>
-                            <Select
-                                value={addRole}
-                                onChange={v => setAddRole(v || 'viewer')}
-                                options={[
-                                    { value: 'viewer', label: 'Viewer' },
-                                    { value: 'admin', label: 'Admin' },
-                                ]}
-                                placeholder=""
-                            />
+                        <div className="grid grid-cols-2 gap-3">
+                            <div className="space-y-1.5">
+                                <label className="block text-sm font-medium text-gray-700
+                                        dark:text-gray-300">Role</label>
+                                <Select
+                                    value={addRole}
+                                    onChange={v => {
+                                        setAddRole(v || 'viewer');
+                                        if (v === 'admin') setAddTeam('');
+                                    }}
+                                    options={ROLE_OPTIONS}
+                                    placeholder=""
+                                />
+                            </div>
+                            {/* Team — hidden for admin */}
+                            {addRole !== 'admin' && (
+                                <div className="space-y-1.5">
+                                    <label className="block text-sm font-medium text-gray-700
+                                         dark:text-gray-300">Team (optional)</label>
+                                    <Select
+                                        value={addTeam}
+                                        onChange={v => setAddTeam(v || '')}
+                                        options={TEAM_OPTIONS}
+                                        placeholder="No team"
+                                    />
+                                </div>
+                            )}
                         </div>
+
+                        {/* Access hint */}
+                        <div className="text-xs text-gray-400 dark:text-gray-500 bg-gray-50
+                            dark:bg-gray-700/50 rounded-lg px-3 py-2">
+                            {addRole === 'admin' && '🔑 Full access — all tickets, import, users'}
+                            {addRole === 'editor' && !addTeam && '✏️ Can edit all tickets, view reports'}
+                            {addRole === 'editor' && addTeam === 'Support' && '✏️ Can edit all tickets, view all teams'}
+                            {addRole === 'editor' && addTeam && addTeam !== 'Support' && `✏️ Can only see and edit ${addTeam} team tickets`}
+                            {addRole === 'viewer' && !addTeam && '👁 Read only — all tickets and reports'}
+                            {addRole === 'viewer' && addTeam === 'Support' && '👁 Read only — all tickets and reports'}
+                            {addRole === 'viewer' && addTeam && addTeam !== 'Support' && `👁 Read only — ${addTeam} team tickets only`}
+                        </div>
+
                         <div className="flex gap-3 pt-2">
                             <button onClick={handleAdd}
                                 className="flex-1 py-2 bg-blue-600 hover:bg-blue-700
@@ -208,19 +275,47 @@ export default function UsersPage() {
                             <input className={inputCls} value={editName}
                                 onChange={e => setEditName(e.target.value)} />
                         </div>
-                        <div className="space-y-1.5">
-                            <label className="block text-sm font-medium text-gray-700
-                                 dark:text-gray-300">Role</label>
-                            <Select
-                                value={editRole}
-                                onChange={v => setEditRole(v || 'viewer')}
-                                options={[
-                                    { value: 'viewer', label: 'Viewer' },
-                                    { value: 'admin', label: 'Admin' },
-                                ]}
-                                placeholder=""
-                            />
+                        <div className="grid grid-cols-2 gap-3">
+                            <div className="space-y-1.5">
+                                <label className="block text-sm font-medium text-gray-700
+                                    dark:text-gray-300">Role</label>
+                                <Select
+                                    value={editRole}
+                                    onChange={v => {
+                                        setEditRole(v || 'viewer');
+                                        if (v === 'admin') setEditTeam('');
+                                    }}
+                                    options={ROLE_OPTIONS}
+                                    placeholder=""
+                                />
+                            </div>
+                            {/* Team — hidden for admin */}
+                            {editRole !== 'admin' && (
+                                <div className="space-y-1.5">
+                                    <label className="block text-sm font-medium text-gray-700
+                                         dark:text-gray-300">Team (optional)</label>
+                                    <Select
+                                        value={editTeam}
+                                        onChange={v => setEditTeam(v || '')}
+                                        options={TEAM_OPTIONS}
+                                        placeholder="No team"
+                                    />
+                                </div>
+                            )}
                         </div>
+
+                        {/* Access hint */}
+                        <div className="text-xs text-gray-400 dark:text-gray-500 bg-gray-50
+                            dark:bg-gray-700/50 rounded-lg px-3 py-2">
+                            {editRole === 'admin' && '🔑 Full access — all tickets, import, users'}
+                            {editRole === 'editor' && !editTeam && '✏️ Can edit all tickets, view reports'}
+                            {editRole === 'editor' && editTeam === 'Support' && '✏️ Can edit all tickets, view all teams'}
+                            {editRole === 'editor' && editTeam && editTeam !== 'Support' && `✏️ Can only see and edit ${editTeam} team tickets`}
+                            {editRole === 'viewer' && !editTeam && '👁 Read only — all tickets and reports'}
+                            {editRole === 'viewer' && editTeam === 'Support' && '👁 Read only — all tickets and reports'}
+                            {editRole === 'viewer' && editTeam && editTeam !== 'Support' && `👁 Read only — ${editTeam} team tickets only`}
+                        </div>
+
                         <div className="space-y-1.5">
                             <label className="block text-sm font-medium text-gray-700
                                  dark:text-gray-300">Status</label>
@@ -334,7 +429,7 @@ export default function UsersPage() {
                     <thead>
                         <tr className="bg-gray-50 dark:bg-gray-700 border-b
                            border-gray-200 dark:border-gray-600">
-                            {['Name', 'Email', 'Role', 'Status', 'Created', ''].map(h => (
+                            {['Name', 'Email', 'Role', 'Team', 'Status', 'Created', ''].map(h => (
                                 <th key={h} className="px-4 py-3 text-left text-xs font-semibold
                                         text-gray-500 dark:text-gray-400 uppercase
                                         tracking-wider">
@@ -345,7 +440,7 @@ export default function UsersPage() {
                     </thead>
                     <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
                         {loading ? (
-                            <tr><td colSpan={6} className="py-16 text-center">
+                            <tr><td colSpan={7} className="py-16 text-center">
                                 <div className="w-8 h-8 border-4 border-blue-500
                                 border-t-transparent rounded-full
                                 animate-spin mx-auto" />
@@ -370,14 +465,21 @@ export default function UsersPage() {
                                 </td>
                                 <td className="px-4 py-3">
                                     <span className={`flex items-center gap-1 w-fit px-2 py-0.5
-                                    rounded-full text-xs font-medium
-                                    ${u.role === 'admin'
-                                            ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400'
-                                            : 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300'
-                                        }`}>
+                                    rounded-full text-xs font-medium ${ROLE_COLORS[u.role]}`}>
                                         {u.role === 'admin' && <Shield size={10} />}
+                                        {u.role === 'editor' && <span>✏️</span>}
                                         {u.role}
                                     </span>
+                                </td>
+                                <td className="px-4 py-3">
+                                    {u.team ? (
+                                        <span className={`px-2 py-0.5 rounded-full text-xs
+                                            font-medium ${TEAM_COLORS[u.team] || 'bg-gray-100 text-gray-600'}`}>
+                                            {u.team}
+                                        </span>
+                                    ) : (
+                                        <span className="text-gray-300 dark:text-gray-600 text-xs">—</span>
+                                    )}
                                 </td>
                                 <td className="px-4 py-3">
                                     <span className={`px-2 py-0.5 rounded-full text-xs font-medium

@@ -103,7 +103,7 @@ router.post('/upload', verifyToken, adminOnly,
 
             // const { tickets, archived, changes, snapshots, stats } = result;
             const { tickets, changes, history, missing } = result;
-            console.log('New tickets from Python:', tickets.filter(t => t.sync_status === 'New').map(t => t.ticket_no));
+            // console.log('New tickets from Python:', tickets.filter(t => t.sync_status === 'New').map(t => t.ticket_no));
             // ── Save to DB in a transaction ───────────────────────────────────────
             const client = await pool.connect();
             try {
@@ -144,7 +144,7 @@ router.post('/upload', verifyToken, adminOnly,
                             team=$6, module=$7, sub_module=$8, issue_description=$9,
                             priority=$10, status_raw=$11, status_norm=$12,
                             assigned_to=$13, comments=$14, fixed_status=$15,
-                            fixed_date=$16, status_changed_date=$17,
+                            fixed_date = COALESCE(fixed_date, $16), status_changed_date=$17,
                             last_seen_date=$18,
                             sync_status='Updated', last_updated=NOW()
                         WHERE ticket_no=$1
@@ -159,21 +159,6 @@ router.post('/upload', verifyToken, adminOnly,
                     }
                 }
 
-                // Archive missing tickets
-                /* for (const ticket_no of missing) {
-                    const row = await client.query(
-                        'SELECT * FROM tickets WHERE ticket_no=$1', [ticket_no]
-                    );
-                    if (row.rows.length) {
-                        await client.query(`
-                            INSERT INTO archive SELECT * FROM tickets WHERE ticket_no=$1
-                        `, [ticket_no]);
-                        await client.query(
-                            'DELETE FROM tickets WHERE ticket_no=$1', [ticket_no]
-                        );
-                    }
-                } */
-
                 // Save change history
                 for (const c of changes) {
                     await client.query(`
@@ -185,25 +170,6 @@ router.post('/upload', verifyToken, adminOnly,
                         c.field_name, c.old_value, c.new_value, c.change_type,
                     ]);
                 }
-
-                // Save snapshots
-                /* for (const s of snapshots) {
-                    await client.query(`
-                    INSERT INTO report_snapshots (
-                        snapshot_date, snapshot_time, product_name, team,
-                        yet_to_start, in_progress, completed_dev,
-                        pre_production, live_move, total_active
-                    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-                    ON CONFLICT (snapshot_date, snapshot_time, product_name, team)
-                    DO UPDATE SET
-                        yet_to_start=$5, in_progress=$6, completed_dev=$7,
-                        pre_production=$8, live_move=$9, total_active=$10
-                    `, [
-                        s.snapshot_date, s.snapshot_time, s.product_name, s.team,
-                        s.yet_to_start, s.in_progress, s.completed_dev,
-                        s.pre_production, s.live_move, s.total_active,
-                    ]);
-                } */
 
                 // Save status history
                 for (const h of history) {
@@ -217,16 +183,6 @@ router.post('/upload', verifyToken, adminOnly,
                         h.changed_date, h.method, h.changed_by,
                     ]);
                 }
-                // Save import log
-                /* await client.query(`
-                    INSERT INTO import_log
-                    (filename, snapshot_date, snapshot_time, imported_by,
-                    new_tickets, updated_tickets, archived_tickets, missing_tickets)
-                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-                `, [
-                    req.file.originalname, snapshot_date, snapshot_time,
-                    req.user.id, newCount, updatedCount, 0, archived.length,
-                ]); */
 
                 // Recompute snapshot for this import date
                 await computeSnapshot(client, snapshot_date);
@@ -267,7 +223,7 @@ router.post('/upload', verifyToken, adminOnly,
     });
 
 // ── GET /api/import/logs ──────────────────────────────────────────────────────
-router.get('/logs', verifyToken, async (req, res) => {
+router.get('/logs', verifyToken, adminOnly, async (req, res) => {
     try {
         const result = await pool.query(`
             SELECT il.*, u.name as imported_by_name
@@ -281,105 +237,6 @@ router.get('/logs', verifyToken, async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 });
-
-
-// ── Compute and save snapshot for a given date ────────────────────────────────
-// Called after every import (and later after every UI status edit)
-// Reconstructs the state of all tickets as of the given date from history
-
-/* async function computeSnapshot(client, date) {
-
-    // Get latest status of every ticket as of this date
-    const statusResult = await client.query(`
-        SELECT DISTINCT ON (h.ticket_no)
-            h.ticket_no,
-            h.new_status,
-            t.product_name,
-            t.team
-        FROM ticket_status_history h
-        JOIN tickets t ON t.ticket_no = h.ticket_no
-        WHERE h.changed_date <= $1
-        ORDER BY h.ticket_no, h.changed_date DESC, h.created_at DESC
-    `, [date]);
-
-    // Get all known product+team combos
-    const combosResult = await client.query(`
-        SELECT DISTINCT product_name, team FROM tickets
-    `);
-
-    // Initialize grid with zeros for every product+team combo
-    const grid = {};
-    combosResult.rows.forEach(c => {
-        const key = `${c.product_name}_${c.team}`;
-        grid[key] = {
-            product_name: c.product_name,
-            team: c.team,
-            yet_to_start: 0,
-            in_progress: 0,
-            completed_dev: 0,
-            pre_production: 0,
-            live_move: 0,
-            closed: 0,
-            total_active: 0,
-        };
-    });
-
-    // Count tickets per status per product+team
-    statusResult.rows.forEach(r => {
-        const key = `${r.product_name}_${r.team}`;
-        if (!grid[key]) return;
-        const g = grid[key];
-        if (r.new_status === 'Yet to Start (Dev)') { g.yet_to_start++; g.total_active++; }
-        else if (r.new_status === 'In-Progress (Dev)') { g.in_progress++; g.total_active++; }
-        else if (r.new_status === 'Completed (Dev)') { g.completed_dev++; g.total_active++; }
-        else if (r.new_status === 'Pre Production') { g.pre_production++; g.total_active++; }
-        else if (r.new_status === 'Fixed') { g.live_move++; }
-        else if (r.new_status === 'Closed') { g.closed++; }
-    });
-
-    // Count new tickets raised ON this exact date
-    const newResult = await client.query(`
-        SELECT product_name, team, COUNT(*) as cnt
-        FROM tickets
-        WHERE date = $1
-        GROUP BY product_name, team
-    `, [date]);
-
-    const newMap = {};
-    newResult.rows.forEach(r => {
-        newMap[`${r.product_name}_${r.team}`] = parseInt(r.cnt);
-    });
-
-    // Upsert each product+team combo into report_snapshots
-    for (const g of Object.values(grid)) {
-        const key = `${g.product_name}_${g.team}`;
-        await client.query(`
-            INSERT INTO report_snapshots (
-                snapshot_date, product_name, team,
-                yet_to_start, in_progress, completed_dev,
-                pre_production, live_move, closed,
-                new_tickets, total_active
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
-            ON CONFLICT (snapshot_date, product_name, team)
-            DO UPDATE SET
-                yet_to_start   = $4,
-                in_progress    = $5,
-                completed_dev  = $6,
-                pre_production = $7,
-                live_move      = $8,
-                closed         = $9,
-                new_tickets    = $10,
-                total_active   = $11
-        `, [
-            date,
-            g.product_name, g.team,
-            g.yet_to_start, g.in_progress, g.completed_dev,
-            g.pre_production, g.live_move, g.closed,
-            newMap[key] || 0,
-            g.total_active,
-        ]);
-    }
-} */
 
 async function computeSnapshot(client, date) {
 

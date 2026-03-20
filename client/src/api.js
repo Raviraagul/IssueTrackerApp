@@ -97,4 +97,7 @@ export const changePassword = (data) =>
 export const resetUserPassword = (id, new_password) =>
     api.put(`/auth/reset-password/${id}`, { new_password });
 
+export const updateName = (name) =>
+    api.put('/auth/update-name', { name });
+
 export default api;

@@ -40,9 +40,16 @@ export function AuthProvider({ children }) {
     };
 
     const isAdmin = user?.role === 'admin';
+    const isEditor = user?.role === 'editor' || user?.role === 'admin';
+    const canEditTicket = (ticketTeam) => {
+        if (!isEditor) return false;
+        if (user?.role === 'admin') return true;
+        if (!user?.team || user?.team === 'Support') return true;
+        return user?.team === ticketTeam;
+    };
 
     return (
-        <AuthContext.Provider value={{ user, login, logout, isAdmin, loading }}>
+        <AuthContext.Provider value={{ user, login, logout, isAdmin, loading, isEditor, canEditTicket, setUser }}>
             {children}
         </AuthContext.Provider>
     );

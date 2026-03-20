@@ -1,11 +1,13 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import {
     LayoutDashboard, Ticket, Upload, FileBarChart,
-    Users, LogOut, Menu, X, Sun, Moon, ChevronDown, KeyRound
+    Users, LogOut, Menu, X, Sun, Moon, ChevronDown, KeyRound, UserPen
 } from 'lucide-react';
 import ChangePasswordModal from './ChangePasswordModal';
+import ChangeNameModal from './ChangeNameModal';
+
 
 // ── Reports nested nav ────────────────────────────────────────────────────────
 function ReportsNav({ onClose }) {
@@ -74,7 +76,7 @@ function ReportsNav({ onClose }) {
 
 // ── Main Layout ───────────────────────────────────────────────────────────────
 export default function Layout({ children }) {
-    const { user, logout, isAdmin } = useAuth();
+    const { user, logout, isAdmin, setUser } = useAuth();
     const navigate = useNavigate();
     const [sidebarOpen, setSidebarOpen] = useState(false);
     const [dark, setDark] = useState(
@@ -82,6 +84,19 @@ export default function Layout({ children }) {
     );
     const [userMenuOpen, setUserMenuOpen] = useState(false);
     const [showChangePwd, setShowChangePwd] = useState(false);
+    const [showChangeName, setShowChangeName] = useState(false);
+
+    // ── Close dropdown on outside click ──────────────────────────────────────
+    const userMenuRef = useRef(null);
+    useEffect(() => {
+        const handleClickOutside = (e) => {
+            if (userMenuRef.current && !userMenuRef.current.contains(e.target)) {
+                setUserMenuOpen(false);
+            }
+        };
+        document.addEventListener('mousedown', handleClickOutside);
+        return () => document.removeEventListener('mousedown', handleClickOutside);
+    }, []);
 
     useEffect(() => {
         const root = document.documentElement;
@@ -97,6 +112,13 @@ export default function Layout({ children }) {
     const handleLogout = () => {
         logout();
         navigate('/login');
+    };
+
+    const handleNameChanged = (newName) => {
+        // Update user in localStorage and context
+        const updated = { ...user, name: newName };
+        localStorage.setItem('user', JSON.stringify(updated));
+        setUser(updated);
     };
 
     const NavItem = ({ to, icon: Icon, label, onClick }) => (
@@ -174,6 +196,13 @@ export default function Layout({ children }) {
             {showChangePwd && (
                 <ChangePasswordModal onClose={() => setShowChangePwd(false)} />
             )}
+            {showChangeName && (
+                <ChangeNameModal
+                    currentName={user?.name}
+                    onClose={() => setShowChangeName(false)}
+                    onNameChanged={handleNameChanged}
+                />
+            )}
 
             <div className="min-h-screen bg-gray-50 dark:bg-gray-900 flex">
 
@@ -235,7 +264,7 @@ export default function Layout({ children }) {
                             </button>
 
                             {/* User menu */}
-                            <div className="relative">
+                            <div className="relative" ref={userMenuRef}>
                                 <button
                                     onClick={() => setUserMenuOpen(!userMenuOpen)}
                                     className="flex items-center gap-2 px-3 py-2 rounded-lg
@@ -250,7 +279,11 @@ export default function Layout({ children }) {
                                     <span className="text-sm font-medium hidden sm:block">
                                         {user?.name}
                                     </span>
-                                    <ChevronDown size={14} />
+                                    <ChevronDown
+                                        size={14}
+                                        className={`transition-transform duration-200
+                                            ${userMenuOpen ? 'rotate-180' : ''}`}
+                                    />
                                 </button>
 
                                 {userMenuOpen && (
@@ -263,7 +296,26 @@ export default function Layout({ children }) {
                                             <p className="text-sm font-medium text-gray-900
                                     dark:text-white">{user?.name}</p>
                                             <p className="text-xs text-gray-400">{user?.email}</p>
+                                            {/* <p className="text-xs text-gray-400 capitalize mt-0.5">
+                                                {user?.role}
+                                                {user?.team && (
+                                                    <span className="ml-1">· {user.team}</span>
+                                                )}
+                                            </p> */}
                                         </div>
+                                        <button
+                                            onClick={() => {
+                                                setUserMenuOpen(false);
+                                                setShowChangeName(true);
+                                            }}
+                                            className="w-full flex items-center gap-2 px-4 py-2
+                                 text-sm text-gray-600 dark:text-gray-300
+                                 hover:bg-gray-50 dark:hover:bg-gray-700
+                                 transition-colors"
+                                        >
+                                            <UserPen size={14} />
+                                            Change Name
+                                        </button>
                                         <button
                                             onClick={() => {
                                                 setUserMenuOpen(false);
