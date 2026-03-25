@@ -351,7 +351,7 @@ export default function DailyMovementPage() {
 
             {/* Filters */}
             <div className="bg-white dark:bg-gray-800 rounded-xl p-4 shadow-sm
-                      border border-gray-100 dark:border-gray-700">
+                      border border-gray-100 dark:border-gray-700 overflow-visible">
                 <div className="flex flex-wrap gap-3 items-end">
                     <DateInput label="Date From" value={dateFrom} onChange={setDateFrom} />
                     <DateInput label="Date To (optional)" value={dateTo} onChange={setDateTo} />
