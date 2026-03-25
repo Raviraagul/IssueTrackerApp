@@ -85,12 +85,55 @@ const formatDateLabel = (from, to) => {
     return `${f} – ${t}`;
 };
 
+// ── Tooltip component ─────────────────────────────────────────────────────────
+function Tooltip({ text, children }) {
+    const [show, setShow] = useState(false);
+    const [pos, setPos] = useState({ x: 0, y: 0 });
+
+    const handleMouseEnter = (e) => {
+        setPos({ x: e.clientX, y: e.clientY });
+        setShow(true);
+    };
+    const handleMouseMove = (e) => {
+        setPos({ x: e.clientX, y: e.clientY });
+    };
+
+    return (
+        <div
+            className="relative"
+            onMouseEnter={handleMouseEnter}
+            onMouseMove={handleMouseMove}
+            onMouseLeave={() => setShow(false)}
+        >
+            {children}
+            {show && text && (
+                <div
+                    style={{
+                        position: 'fixed',
+                        left: pos.x + 12,
+                        top: pos.y + 12,
+                        zIndex: 9999,
+                        maxWidth: '320px',
+                        pointerEvents: 'none',
+                    }}
+                    className="bg-gray-900 dark:bg-gray-700 text-white text-xs
+                        rounded-lg px-3 py-2 shadow-xl leading-relaxed
+                        border border-gray-700 dark:border-gray-600"
+                >
+                    {text}
+                </div>
+            )}
+        </div>
+    );
+}
+
 // ── Main Page Component ───────────────────────────────────────────────────────
 export default function TicketsPage() {
     const location = useLocation();
     console.log(location.pathname + location.search);
 
     const navigate = useNavigate();
+    const [selectedTicket, setSelectedTicket] = useState(null);
 
     // ── useSearchParams ───────────────────────────────────────────────────────
     // searchParams   → read URL params  (like reading from localStorage)
@@ -470,7 +513,7 @@ export default function TicketsPage() {
                             <tr className="bg-gray-50 dark:bg-gray-700 border-b
                              border-gray-200 dark:border-gray-600">
                                 {['Ticket No', 'Date', 'Company', 'Product', 'Team',
-                                    'Module', 'Priority', 'Status', 'Assigned To', ''].map((h) => (
+                                    'Module', 'Description', 'Priority', 'Status', 'Assigned To', ''].map((h) => (
                                         <th key={h} className="px-4 py-3 text-left text-xs font-semibold
                                           text-gray-500 dark:text-gray-400 uppercase
                                           tracking-wider whitespace-nowrap">
@@ -513,7 +556,10 @@ export default function TicketsPage() {
                                         {formatDate(t.date)}
                                     </td>
                                     <td className="px-4 py-3 text-gray-900 dark:text-white max-w-[120px] truncate">
-                                        {t.company}
+                                        {/* {t.company} */}
+                                        <Tooltip text={t.company}>
+                                            <p className="truncate">{t.company}</p>
+                                        </Tooltip>
                                     </td>
                                     <td className="px-4 py-3 whitespace-nowrap text-gray-600 dark:text-gray-300">
                                         {t.product_name}
@@ -525,7 +571,15 @@ export default function TicketsPage() {
                                         </span>
                                     </td>
                                     <td className="px-4 py-3 text-gray-600 dark:text-gray-300 max-w-[120px] truncate">
-                                        {t.module}
+                                        {/* {t.module} */}
+                                        <Tooltip text={t.module}>
+                                            <p className="truncate">{t.module}</p>
+                                        </Tooltip>
+                                    </td>
+                                    <td className="px-4 py-3 text-gray-600 dark:text-gray-300 max-w-[260px]">
+                                        <Tooltip text={t.issue_description}>
+                                            <p className="truncate">{t.issue_description}</p>
+                                        </Tooltip>
                                     </td>
                                     <td className="px-4 py-3">
                                         <Badge text={t.priority} colorMap={PRIORITY_COLORS} />
