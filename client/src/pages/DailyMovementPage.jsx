@@ -331,7 +331,7 @@ export default function DailyMovementPage() {
         : data;
 
     return (
-        <div className="space-y-5 overflow-hidden">
+        <div className="space-y-5">
             <div>
                 <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
                     Daily Movement Report
@@ -351,7 +351,7 @@ export default function DailyMovementPage() {
 
             {/* Filters */}
             <div className="bg-white dark:bg-gray-800 rounded-xl p-4 shadow-sm
-                      border border-gray-100 dark:border-gray-700 overflow-visible">
+                      border border-gray-100 dark:border-gray-700">
                 <div className="flex flex-wrap gap-3 items-end">
                     <DateInput label="Date From" value={dateFrom} onChange={setDateFrom} />
                     <DateInput label="Date To (optional)" value={dateTo} onChange={setDateTo} />
@@ -380,8 +380,7 @@ export default function DailyMovementPage() {
 
             {/* Table */}
             <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm
-                border border-gray-100 dark:border-gray-700 flex flex-col
-                overflow-hidden">
+                border border-gray-100 dark:border-gray-700 flex flex-col overflow-hidden">
                 <div className="px-5 py-4 border-b border-gray-100 dark:border-gray-700
                   flex items-center justify-between shrink-0">
                     <div className="flex items-center gap-2">
