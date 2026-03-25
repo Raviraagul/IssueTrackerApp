@@ -84,8 +84,8 @@ export const getOverallReport = (params) =>
 export const getSummaryReport = (params) =>
     api.get('/reports/summary', { params });
 
-export const getTrendReport = () =>
-    api.get('/reports/trend');
+export const getTrendReport = (params) =>
+    api.get('/reports/trend', { params });
 
 export const getDailyMovementReport = (params) =>
     api.get('/reports/daily-movement', { params });
