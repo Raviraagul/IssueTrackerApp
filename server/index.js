@@ -53,5 +53,5 @@ app.use((err, req, res, next) => {
 // ── Start server ──────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
     console.log(`🚀 Server running at http://localhost:${PORT}`);
-    console.log(`📋 Health check: http://localhost:${PORT}/api/health`);
+    // console.log(`📋 Health check: http://localhost:${PORT}/api/health`);
 });
