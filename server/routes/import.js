@@ -141,10 +141,10 @@ router.post('/upload', verifyToken, adminOnly,
                         await client.query(`
                         UPDATE tickets SET
                             date=$2, company=$3, product_name=$4, platform=$5,
-                            team=$6, module=$7, sub_module=$8, issue_description=$9,
+                            team=$6, module=$7, sub_module=$8, issue_description = COALESCE($9, issue_description),
                             priority=$10, status_raw=$11, status_norm=$12,
-                            assigned_to=$13, comments=$14, fixed_status=$15,
-                            fixed_date = COALESCE(fixed_date, $16), status_changed_date=$17,
+                            assigned_to = COALESCE($13, assigned_to), comments = COALESCE(comments, $14),
+                            fixed_status=$15, fixed_date = COALESCE(fixed_date, $16), status_changed_date=$17,
                             last_seen_date=$18,
                             sync_status='Updated', last_updated=NOW()
                         WHERE ticket_no=$1
