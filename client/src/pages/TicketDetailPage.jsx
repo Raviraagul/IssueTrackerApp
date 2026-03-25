@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { getTicket, updateTicket } from '../api';
 import axios from 'axios';
@@ -186,6 +186,10 @@ function StatusTimeline({ history }) {
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
 export default function TicketDetailPage() {
+
+    const location = useLocation();
+    console.log(`pathname = ${location.pathname}, search = ${location.search}`);
+
     const { id } = useParams();
     const navigate = useNavigate();
     const { canEditTicket } = useAuth();
@@ -278,11 +282,13 @@ export default function TicketDetailPage() {
                       rounded-full animate-spin" />
         </div>
     );
+    console.log(`Windows history: ${JSON.stringify(window.history.length)}`);
 
     if (error) return (
         <div className="flex flex-col items-center justify-center h-64 gap-4">
             <p className="text-red-500">{error}</p>
-            <button onClick={() => navigate('/tickets')}
+            {/* <button onClick={() => navigate('/tickets')} */}
+            <button onClick={() => navigate(-1)}
                 className="text-blue-600 hover:underline text-sm">
                 ← Back to Tickets
             </button>
@@ -308,7 +314,8 @@ export default function TicketDetailPage() {
 
             {/* ── Header ── */}
             <div className="flex items-center justify-between">
-                <button onClick={() => navigate('/tickets')}
+                {/* <button onClick={() => navigate('/tickets')} */}
+                <button onClick={() => navigate(-1)}
                     className="flex items-center gap-2 text-sm text-gray-500
                      dark:text-gray-400 hover:text-gray-700
                      dark:hover:text-gray-200 transition-colors">
