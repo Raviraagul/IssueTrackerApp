@@ -36,7 +36,8 @@ router.get('/', verifyToken, async (req, res) => {
                 ticket_no ILIKE $${i} OR
                 company ILIKE $${i} OR
                 module ILIKE $${i} OR
-                issue_description ILIKE $${i}
+                issue_description ILIKE $${i} OR
+                assigned_to ILIKE $${i}
             )`);
             params.push(`%${search}%`);
             i++;
