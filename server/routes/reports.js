@@ -152,53 +152,107 @@ router.get('/trend', verifyToken, async (req, res) => {
         const ntTeamFilter = teamScope ? `AND t.team = '${teamScope}'`
             : team ? `AND t.team = '${team}'` : '';
         const ntProductFilter = product ? `AND t.product_name = '${product}'` : '';
-
-        const result = await pool.query(`
+        const trendsSql = `WITH latest_per_period AS (
+            SELECT DISTINCT ON (
+                TO_CHAR(snapshot_date, '${granularity === 'daily' ? 'YYYY-MM-DD'
+                : granularity === 'weekly' ? 'IYYY-IW'
+                    : 'YYYY-MM'}'),
+                product_name,
+                team
+            )
+                snapshot_date,
+                product_name,
+                team,
+                yet_to_start,
+                total_active
+            FROM report_snapshots
+            WHERE snapshot_date >= CURRENT_DATE - INTERVAL '${days} days'
+            ${teamScope ? `AND team = '${teamScope}'` : team ? `AND team = '${team}'` : ''}
+            ${product ? `AND product_name = '${product}'` : ''}
+            ORDER BY
+                TO_CHAR(snapshot_date, '${granularity === 'daily' ? 'YYYY-MM-DD'
+                : granularity === 'weekly' ? 'IYYY-IW'
+                    : 'YYYY-MM'}'),
+                product_name,
+                team,
+                snapshot_date DESC
+        ),
+        live_counts AS (
             SELECT
-                ${periodExpr}                           AS period,
-                ${sortExpr}                             AS sort_key,
-                rs.product_name,
-                ROUND(AVG(rs.yet_to_start), 0)          AS yet_to_start,
-                ROUND(AVG(rs.total_active), 0)          AS total_active,
-                COUNT(DISTINCT h_fixed.id)              AS live_move,
-                COUNT(DISTINCT h_closed.id)             AS closed,
-                COALESCE(MAX(nt.new_tickets), 0)        AS new_tickets
-            FROM report_snapshots rs
-            LEFT JOIN ticket_status_history h_fixed
-                ON h_fixed.changed_date = rs.snapshot_date
-                AND h_fixed.new_status = 'Fixed'
-                AND EXISTS (
-                    SELECT 1 FROM tickets t
-                    WHERE t.ticket_no = h_fixed.ticket_no
-                    AND t.product_name = rs.product_name
-                )
-            LEFT JOIN ticket_status_history h_closed
-                ON h_closed.changed_date = rs.snapshot_date
-                AND h_closed.new_status = 'Closed'
-                AND EXISTS (
-                    SELECT 1 FROM tickets t
-                    WHERE t.ticket_no = h_closed.ticket_no
-                    AND t.product_name = rs.product_name
-                )
-            LEFT JOIN (
-                SELECT
-                    t.date          AS ticket_date,
-                    t.product_name,
-                    COUNT(*)        AS new_tickets
-                FROM tickets t
-                WHERE t.date >= CURRENT_DATE - INTERVAL '${days} days'
-                ${ntTeamFilter}
-                ${ntProductFilter}
-                GROUP BY t.date, t.product_name
-            ) nt ON nt.ticket_date = rs.snapshot_date
-                AND nt.product_name = rs.product_name
-            ${where}
-            GROUP BY ${periodExpr}, rs.product_name
-            ORDER BY sort_key, rs.product_name
-        `, params);
+                t.product_name,
+                TO_CHAR(h.changed_date, '${granularity === 'daily' ? 'YYYY-MM-DD'
+                : granularity === 'weekly' ? 'IYYY-IW'
+                    : 'YYYY-MM'}') AS period_key,
+                COUNT(*) AS live_move
+            FROM ticket_status_history h
+            JOIN tickets t ON t.ticket_no = h.ticket_no
+            WHERE h.new_status = 'Fixed'
+            AND h.changed_date >= CURRENT_DATE - INTERVAL '${days} days'
+            ${teamScope ? `AND t.team = '${teamScope}'` : team ? `AND t.team = '${team}'` : ''}
+            ${product ? `AND t.product_name = '${product}'` : ''}
+            GROUP BY t.product_name, period_key
+        ),
+        closed_counts AS (
+            SELECT
+                t.product_name,
+                TO_CHAR(h.changed_date, '${granularity === 'daily' ? 'YYYY-MM-DD'
+                : granularity === 'weekly' ? 'IYYY-IW'
+                    : 'YYYY-MM'}') AS period_key,
+                COUNT(*) AS closed
+            FROM ticket_status_history h
+            JOIN tickets t ON t.ticket_no = h.ticket_no
+            WHERE h.new_status = 'Closed'
+            AND h.changed_date >= CURRENT_DATE - INTERVAL '${days} days'
+            ${teamScope ? `AND t.team = '${teamScope}'` : team ? `AND t.team = '${team}'` : ''}
+            ${product ? `AND t.product_name = '${product}'` : ''}
+            GROUP BY t.product_name, period_key
+        ),
+        new_ticket_counts AS (
+            SELECT
+                product_name,
+                TO_CHAR(date, '${granularity === 'daily' ? 'YYYY-MM-DD'
+                : granularity === 'weekly' ? 'IYYY-IW'
+                    : 'YYYY-MM'}') AS period_key,
+                COUNT(*) AS new_tickets
+            FROM tickets t
+            WHERE date >= CURRENT_DATE - INTERVAL '${days} days'
+            ${ntTeamFilter}
+            ${ntProductFilter}
+            GROUP BY product_name, period_key
+        )
+        SELECT
+            ${periodExpr}                               AS period,
+            MIN(rs.snapshot_date)                       AS sort_key,
+            rs.product_name,
+            SUM(rs.yet_to_start)                        AS yet_to_start,
+            SUM(rs.total_active)                        AS total_active,
+            COALESCE(MAX(lc.live_move), 0)              AS live_move,
+            COALESCE(MAX(cc.closed), 0)                 AS closed,
+            COALESCE(MAX(nc.new_tickets), 0)            AS new_tickets
+        FROM latest_per_period rs
+        LEFT JOIN live_counts lc
+            ON lc.product_name = rs.product_name
+            AND lc.period_key = TO_CHAR(rs.snapshot_date, '${granularity === 'daily' ? 'YYYY-MM-DD'
+                : granularity === 'weekly' ? 'IYYY-IW'
+                    : 'YYYY-MM'}')
+        LEFT JOIN closed_counts cc
+            ON cc.product_name = rs.product_name
+            AND cc.period_key = TO_CHAR(rs.snapshot_date, '${granularity === 'daily' ? 'YYYY-MM-DD'
+                : granularity === 'weekly' ? 'IYYY-IW'
+                    : 'YYYY-MM'}')
+        LEFT JOIN new_ticket_counts nc
+            ON nc.product_name = rs.product_name
+            AND nc.period_key = TO_CHAR(rs.snapshot_date, '${granularity === 'daily' ? 'YYYY-MM-DD'
+                : granularity === 'weekly' ? 'IYYY-IW'
+                    : 'YYYY-MM'}')
+        GROUP BY ${periodExpr}, rs.product_name
+        ORDER BY sort_key, rs.product_name;`;
+        // console.log(trendsSql);
+        const result = await pool.query(trendsSql);
 
         res.json(result.rows);
     } catch (err) {
+        console.log(`Trends Error: ${err}`);
         res.status(500).json({ error: err.message });
     }
 });
