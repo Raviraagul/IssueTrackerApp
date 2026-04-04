@@ -86,6 +86,73 @@ function KpiCard({ label, value, icon: Icon, color, sub }) {
     );
 }
 
+// ── Custom Tooltip (works for Bar, Pie, and Area/Line charts) ─────────────────
+// Recharts passes these props automatically:
+// active  → true when hovering
+// payload → array of data points being hovered
+// label   → x-axis label (for bar/line) or undefined (for pie)
+function CustomTooltip({ active, payload, label }) {
+    if (!active || !payload?.length) return null;
+
+    // Detect chart type by inspecting payload structure:
+    // Pie  → payload[0].name exists and no label
+    // Bar  → label exists, payload has fill property
+    // Area → label exists, payload has stroke property
+    const isPie = !label && payload[0]?.name;
+    const isArea = label && payload[0]?.stroke;
+
+    return (
+        <div style={{ position: 'relative' }}
+            className="bg-gray-900 dark:bg-gray-800 text-white rounded-lg
+                px-3 py-2.5 shadow-xl text-xs border border-gray-700
+                dark:border-gray-600 min-w-[150px]">
+
+            {/* Header — period for area, team for bar, product for pie */}
+            {(label || isPie) && (
+                <p className="font-semibold text-gray-200 mb-2 pb-1.5
+                    border-b border-gray-700">
+                    {isPie ? payload[0].name : label}
+                </p>
+            )}
+
+            {/* Rows — one per metric */}
+            {payload.map((entry, i) => {
+                // Skip zero values to keep tooltip clean
+                if (entry.value === 0 || entry.value === null) return null;
+
+                // Color dot — use fill for bar/pie, stroke for area lines
+                const color = entry.stroke || entry.fill ||
+                    entry.payload?.fill || '#6b7280';
+
+                // Label — use TREND_LABELS map for area chart keys,
+                // otherwise use entry.name directly
+                const entryLabel = TREND_LABELS[entry.dataKey]
+                    || entry.name
+                    || entry.dataKey;
+
+                return (
+                    <div key={i} className="flex items-center
+                        justify-between gap-4 py-0.5">
+                        <div className="flex items-center gap-1.5">
+                            <span className="w-2 h-2 rounded-sm shrink-0"
+                                style={{ background: color }} />
+                            <span className="text-gray-300">{entryLabel}</span>
+                        </div>
+                        <span className="font-semibold text-white">
+                            {entry.value}
+                        </span>
+                    </div>
+                );
+            })}
+
+            {/* Arrow pointer at bottom */}
+            {/* <div className="absolute -bottom-1.5 left-1/2 -translate-x-1/2
+                w-3 h-3 bg-gray-900 dark:bg-gray-800 rotate-45
+                border-r border-b border-gray-700 dark:border-gray-600" /> */}
+        </div>
+    );
+}
+
 // ── Monthly Trend Chart ───────────────────────────────────────────────────────
 function MonthlyTrendChart({ teamScope }) {
     const [trendData, setTrendData] = useState([]);
@@ -125,6 +192,7 @@ function MonthlyTrendChart({ teamScope }) {
             if (selectedTeam) params.team = selectedTeam;
             const res = await getTrendReport(params);
             setTrendData(res.data);
+            console.log("Trend Data", res.data);
         } catch { }
         finally { setLoading(false); }
     };
@@ -297,7 +365,7 @@ function MonthlyTrendChart({ teamScope }) {
                             axisLine={{ stroke: gridColor }}
                             tickLine={{ stroke: gridColor }}
                         />
-                        <Tooltip
+                        {/* <Tooltip
                             contentStyle={{
                                 background: tooltipBg,
                                 border: `1px solid ${tooltipBorder}`,
@@ -307,7 +375,8 @@ function MonthlyTrendChart({ teamScope }) {
                             }}
                             itemStyle={{ color: tooltipText }}
                             labelStyle={{ color: tooltipText, fontWeight: 500 }}
-                        />
+                        /> */}
+                        <Tooltip content={<CustomTooltip />} />
                         <Legend wrapperStyle={{ fontSize: 11, color: tickColor }} />
 
                         {viewMode === 'combined'
@@ -414,7 +483,7 @@ export default function DashboardPage() {
         });
     };
 
-    const productChartData = () => {
+    /* const productChartData = () => {
         if (!summary?.byProduct) return [];
         const map = {};
         summary.byProduct.forEach(r => {
@@ -422,6 +491,19 @@ export default function DashboardPage() {
             map[r.product_name] += parseInt(r.count);
         });
         return Object.entries(map).map(([name, value]) => ({ name, value }));
+    }; */
+    const productChartData = () => {
+        if (!summary?.byProduct) return [];
+        const map = {};
+        summary.byProduct.forEach((r) => {
+            if (!map[r.product_name]) map[r.product_name] = 0;
+            map[r.product_name] += parseInt(r.count);
+        });
+        const entries = Object.entries(map).map(([name, value]) => ({ name, value }));
+        return entries.map((e, i) => ({
+            ...e,
+            fill: PIE_COLORS[i % PIE_COLORS.length]
+        }));
     };
 
     if (loading) return (
@@ -496,9 +578,10 @@ export default function DashboardPage() {
                             <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                             <XAxis dataKey="team" tick={{ fontSize: 12 }} />
                             <YAxis tick={{ fontSize: 12 }} />
-                            <Tooltip shared={false}
+                            {/* <Tooltip shared={false}
                                 contentStyle={{ background: 'transparent', border: 'none', boxShadow: 'none', padding: 0 }}
-                                itemStyle={{ fontWeight: 500 }} />
+                                itemStyle={{ fontWeight: 500 }} /> */}
+                            <Tooltip content={<CustomTooltip />} />
                             <Legend wrapperStyle={{ fontSize: 11 }} />
                             {Object.entries(STATUS_COLORS).map(([status, color]) => (
                                 <Bar key={status} dataKey={status} fill={color} radius={[4, 4, 0, 0]} />
@@ -523,7 +606,8 @@ export default function DashboardPage() {
                                     <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
                                 ))}
                             </Pie>
-                            <Tooltip />
+                            {/* <Tooltip /> */}
+                            <Tooltip content={<CustomTooltip />} />
                         </PieChart>
                     </ResponsiveContainer>
                     {/* Legend */}
