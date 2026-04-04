@@ -480,7 +480,6 @@ export default function TicketDetailPage() {
                                 value={ticket.platform} />
                             <Field label="Module" value={ticket.module} />
                             <Field label="Sub Module" value={ticket.sub_module} />
-                            {/* <Field label="Fixed Status" value={ticket.fixed_status} /> */}
                         </div>
                     </div>
 
