@@ -50,19 +50,22 @@ function DailyMovementTable({ rows, loading, viewType }) {
         // const dtKey = `${r.snapshot_date}_${r.snapshot_time}`;
         const dtKey = `${r.snapshot_date}`;
         const prodKey = `${dtKey}_${r.product_name}`;
-        let dtCount = 0, prodCount = 0, j = i;
-        while (j < rows.length &&
+        // let dtCount = 0, prodCount = 0, j = i;
+        let dtCount = 0, prodCount = 0, dateTotal = 0, j = i;
+        while (j < rows.length && `${rows[j].snapshot_date}` === dtKey) {
             // `${rows[j].snapshot_date}_${rows[j].snapshot_time}` === dtKey) {
-            `${rows[j].snapshot_date}` === dtKey) {
-            dtCount++; j++;
+
+            dtCount++;
+            dateTotal += rows[j].total_issue || 0; // Sum all issues for this date
+            j++;
         }
         j = i;
-        while (j < rows.length &&
+        while (j < rows.length && `${rows[j].snapshot_date}_${rows[j].product_name}` === prodKey) {
             // `${rows[j].snapshot_date}_${rows[j].snapshot_time}_${rows[j].product_name}` === prodKey) {
-            `${rows[j].snapshot_date}_${rows[j].product_name}` === prodKey) {
+
             prodCount++; j++;
         }
-        grouped.push({ ...r, dtCount, prodCount, dtKey, prodKey });
+        grouped.push({ ...r, dtCount, prodCount, dtKey, prodKey, dateTotal });
         i++;
     }
 
@@ -250,17 +253,32 @@ function DailyMovementTable({ rows, loading, viewType }) {
                                     </span>
                                 </td>
                                 {/* Total (merged per product) */}
-                                {showProd && (
-                                    <td rowSpan={row.prodCount}
-                                        className="px-4 py-3 text-center align-middle
-                                 bg-orange-50 dark:bg-orange-900/10
-                                 border-l border-b border-orange-200
-                                 dark:border-orange-900">
-                                        <span className="text-xl font-black text-orange-600
-                                     dark:text-orange-400">
-                                            {row.product_total}
-                                        </span>
-                                    </td>
+                                {viewType === 'teamwise' ? (
+                                    showProd && (
+                                        <td rowSpan={row.prodCount}
+                                            className="px-4 py-3 text-center align-middle
+                                    bg-orange-50 dark:bg-orange-900/10
+                                    border-l border-b border-orange-200
+                                    dark:border-orange-900">
+                                            <span className="text-xl font-black text-orange-600
+                                        dark:text-orange-400">
+                                                {row.product_total}
+                                            </span>
+                                        </td>
+                                    )
+                                ) : (
+                                    showDt && (
+                                        <td rowSpan={row.dtCount}
+                                            className="px-4 py-3 text-center align-middle
+                                            bg-orange-50 dark:bg-orange-900/10
+                                            border-l border-b border-orange-200
+                                            dark:border-orange-900">
+                                            <span className="text-xl font-black text-orange-600
+                                                    dark:text-orange-400">
+                                                {row.dateTotal}
+                                            </span>
+                                        </td>
+                                    )
                                 )}
                             </tr>
                         );
