@@ -297,6 +297,18 @@ def build_tickets(sheets, snapshot_date, existing_tickets, import_filename):
                     "method":       "import",
                     "changed_by":   import_filename,
                 })
+            
+            # ── Smart Fixed Date Logic ────────────────────────────────────────
+            excel_fixed_date = clean(row.get("Fixed Date"))
+            final_fixed_date = excel_fixed_date
+
+            if not excel_fixed_date and status_norm == 'Fixed':
+                if prev and prev.get("status_norm") == 'Fixed':
+                    # It was already fixed previously. Send None so DB keeps its old date!
+                    final_fixed_date = None
+                else:
+                    # It freshly became 'Fixed' today. Auto-fill snapshot date.
+                    final_fixed_date = snapshot_date
 
             # ── Build ticket dict ─────────────────────────────────────────────
             # Full ticket record — goes to the tickets table in the DB
@@ -319,7 +331,8 @@ def build_tickets(sheets, snapshot_date, existing_tickets, import_filename):
                 "comments":            clean(row.get("Comments")),
                 "fixed_status":        clean(row.get("Fixed status")),
                 # "fixed_date":          clean(row.get("Fixed Date")),
-                "fixed_date":          clean(row.get("Fixed Date")) or (snapshot_date if status_norm == 'Fixed' else None),
+                # "fixed_date":          clean(row.get("Fixed Date")) or (snapshot_date if status_norm == 'Fixed' else None),
+                "fixed_date":          final_fixed_date,
                 "status_changed_date": status_changed_date,
                 "last_seen_date":      snapshot_date,
                 "sync_status":         "Updated" if prev else "New",
