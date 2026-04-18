@@ -2,8 +2,8 @@ import { useState, useEffect, useRef } from 'react';
 import { NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import {
-    LayoutDashboard, Ticket, Upload, FileBarChart,
-    Users, LogOut, Menu, X, Sun, Moon, ChevronDown, KeyRound, UserPen
+    LayoutDashboard, Ticket, Upload, FileBarChart, Users, LogOut,
+    Menu, X, Sun, Moon, ChevronDown, KeyRound, UserPen, SendHorizonal
 } from 'lucide-react';
 import ChangePasswordModal from './ChangePasswordModal';
 import ChangeNameModal from './ChangeNameModal';
@@ -157,18 +157,15 @@ export default function Layout({ children }) {
 
             {/* Nav */}
             <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
-                <NavItem to="/dashboard" icon={LayoutDashboard} label="Dashboard"
-                    onClick={onClose} />
-                <NavItem to="/tickets" icon={Ticket} label="Tickets"
-                    onClick={onClose} />
+                <NavItem to="/dashboard" icon={LayoutDashboard} label="Dashboard" onClick={onClose} />
+                <NavItem to="/tickets" icon={Ticket} label="Tickets" onClick={onClose} />
+                <NavItem to="/live-moved" icon={SendHorizonal} label="Live Moved" onClick={onClose} />
                 {isAdmin && (
-                    <NavItem to="/import" icon={Upload} label="Import"
-                        onClick={onClose} />
+                    <NavItem to="/import" icon={Upload} label="Import" onClick={onClose} />
                 )}
                 <ReportsNav onClose={onClose} />
                 {isAdmin && (
-                    <NavItem to="/users" icon={Users} label="Users"
-                        onClick={onClose} />
+                    <NavItem to="/users" icon={Users} label="Users" onClick={onClose} />
                 )}
             </nav>
 
