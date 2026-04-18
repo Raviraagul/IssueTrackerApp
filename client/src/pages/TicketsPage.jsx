@@ -1,7 +1,7 @@
 // ── Imports ───────────────────────────────────────────────────────────────────
 import { useState, useEffect } from 'react';
 import { getTickets } from '../api';
-import { Search, Filter, ChevronLeft, ChevronRight, Eye, Calendar, X } from 'lucide-react';
+import { Search, Filter, ChevronLeft, ChevronRight, Eye, Calendar, X, FileDown, Loader2 } from 'lucide-react';
 import Select from '../components/Select';
 import DateInput from '../components/DateInput';
 import { useNavigate, useSearchParams, useLocation } from 'react-router-dom';
@@ -127,6 +127,293 @@ function Tooltip({ text, children }) {
     );
 }
 
+// ── Word Export ───────────────────────────────────────────────────────────────
+async function exportToWord(tickets, orientation = 'landscape') {
+    const { Document, Packer, Paragraph, Table, TableRow, TableCell, AlignmentType, WidthType, PageOrientation, ShadingType, TextRun, VerticalAlign, TableLayoutType } = await import('docx');
+
+    const rawToday = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+    const groups = {};
+    tickets.forEach(t => {
+        const prod = t.product_name || 'Other';
+        if (!groups[prod]) groups[prod] = [];
+        groups[prod].push(t);
+    });
+
+    const isLandscape = orientation === 'landscape';
+    const children = [];
+
+    const createP = (text, align = AlignmentType.LEFT, bold = false, color = "000000") => {
+        return new Paragraph({
+            alignment: align,
+            children: [new TextRun({ text, size: 24, bold, color })]
+        });
+    };
+
+    const createHeaderCell = (text, align = AlignmentType.LEFT, widthPct = null) => new TableCell({
+        children: [createP(text, align, true, "111827")],
+        shading: { fill: 'F3F4F6', type: ShadingType.CLEAR },
+        verticalAlign: VerticalAlign.CENTER,
+        ...(widthPct ? { width: { size: widthPct, type: WidthType.PERCENTAGE } } : {})
+    });
+
+    const createCell = (text, align = AlignmentType.LEFT, widthPct = null) => new TableCell({
+        children: [createP(text, align)],
+        verticalAlign: VerticalAlign.CENTER,
+        ...(widthPct ? { width: { size: widthPct, type: WidthType.PERCENTAGE } } : {})
+    });
+
+    children.push(new Paragraph({
+        alignment: AlignmentType.CENTER,
+        spacing: { after: 120 },
+        children: [new TextRun({ text: "Tickets Report", size: 36, bold: true, color: "111827" })]
+    }));
+    children.push(new Paragraph({
+        alignment: AlignmentType.CENTER,
+        spacing: { after: 360 },
+        children: [new TextRun({ text: `Report Date: ${rawToday}  |  Total Tickets: ${tickets.length}`, size: 22, color: "4B5563", italics: true })]
+    }));
+
+    Object.entries(groups).forEach(([productName, rows]) => {
+        children.push(new Paragraph({
+            alignment: AlignmentType.CENTER,
+            spacing: { before: 240, after: 120 },
+            children: [new TextRun({ text: productName, size: 28, bold: true, color: "2563EB" })]
+        }));
+
+        const headerRow = new TableRow({
+            tableHeader: true,
+            cantSplit: true,
+            children: [
+                createHeaderCell('S NO', AlignmentType.CENTER, 5),
+                createHeaderCell('Module', AlignmentType.CENTER, 20),
+                createHeaderCell('Issue Description', AlignmentType.CENTER, 45),
+                createHeaderCell('Priority', AlignmentType.CENTER, 10),
+                createHeaderCell('Comments/Api', AlignmentType.CENTER, 20),
+            ]
+        });
+
+        const bodyRows = rows.map((t, idx) => new TableRow({
+            cantSplit: true,
+            children: [
+                createCell(String(idx + 1), AlignmentType.CENTER, 5),
+                createCell(t.module || '—', AlignmentType.LEFT, 20),
+                createCell(t.issue_description || '—', AlignmentType.LEFT, 45),
+                createCell(t.priority || '—', AlignmentType.CENTER, 10),
+                createCell('', AlignmentType.LEFT, 20),
+            ]
+        }));
+
+        const table = new Table({
+            layout: TableLayoutType.FIXED,
+            width: { size: 100, type: WidthType.PERCENTAGE },
+            rows: [headerRow, ...bodyRows]
+        });
+        children.push(table);
+        children.push(new Paragraph({ text: "", spacing: { after: 240 } }));
+    });
+
+    const doc = new Document({
+        sections: [{
+            properties: {
+                page: {
+                    margin: { top: 720, right: 720, bottom: 720, left: 720 },
+                    size: { orientation: isLandscape ? PageOrientation.LANDSCAPE : PageOrientation.PORTRAIT }
+                }
+            },
+            children: children
+        }]
+    });
+
+    const buffer = await Packer.toBlob(doc);
+    const url = window.URL.createObjectURL(buffer);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `Tickets_Report_${new Date().toISOString().split('T')[0]}.docx`;
+    a.click();
+    window.URL.revokeObjectURL(url);
+}
+
+// ── Excel Export ──────────────────────────────────────────────────────────────
+async function exportToExcel(tickets, applied = {}) {
+    const ExcelJS = await import('exceljs');
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet('Tickets Report');
+
+    const hideTeam = !!applied.team;
+    const hideStatus = !!applied.status;
+
+    // Hide gridlines and freeze top panel
+    workbook.creator = 'Issue Tracker App';
+    worksheet.views = [{ showGridLines: false, state: 'frozen', xSplit: 0, ySplit: 5 }];
+
+    // Dynamically build headers and columns based on requirements
+    const headers = [
+        { key: 'A', header: '', width: 3 },
+        { key: 'sno', header: 'S.NO', width: 6 },
+        { key: 'ticket', header: 'TICKET NO', width: 14 },
+        { key: 'date', header: 'DATE', width: 14 }
+    ];
+
+    if (!hideTeam) headers.push({ key: 'team', header: 'TEAM', width: 10 });
+
+    headers.push({ key: 'module', header: 'MODULE', width: 22 });
+    headers.push({ key: 'issueDesc', header: 'ISSUE DESCRIPTION', width: 60 });
+    headers.push({ key: 'priority', header: 'PRIORITY', width: 12 });
+
+    if (!hideStatus) headers.push({ key: 'status', header: 'STATUS', width: 18 });
+
+    headers.push({ key: 'assignee', header: 'ASSIGNED TO', width: 18 });
+    headers.push({ key: 'comments', header: 'COMMENTS / API', width: 25 });
+    headers.push({ key: 'Z', header: '', width: 3 });
+
+    worksheet.columns = headers.map(h => ({ key: h.key, width: h.width }));
+    const totalCols = headers.length;
+
+    const rawToday = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+
+    // ── Master Report Header ──
+    const corporateBlue = 'FF0F172A'; // Slate 900
+
+    // numeric mergeCells(topRow, leftCol, bottomRow, rightCol)
+    worksheet.mergeCells(2, 2, 3, totalCols - 1);
+    const titleCell = worksheet.getCell(2, 2);
+    titleCell.value = "TICKETS REPORT";
+    titleCell.font = { name: 'Segoe UI', size: 16, bold: true, color: { argb: 'FFFFFFFF' } };
+    titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: corporateBlue } };
+    titleCell.alignment = { vertical: 'middle', horizontal: 'left' };
+
+    worksheet.mergeCells(4, 2, 4, totalCols - 1);
+    const subtitleCell = worksheet.getCell(4, 2);
+    // subtitleCell.value = `    Generated: ${rawToday}   |   Total Issues: ${tickets.length}`;
+    const activeFilters = [];
+    if (applied.status) activeFilters.push(`Status: ${applied.status}`);
+    if (applied.team) activeFilters.push(`Team: ${applied.team}`);
+    const filterBadge = activeFilters.length ? `   |   ${activeFilters.join(', ')}` : '';
+    subtitleCell.value = `    Generated: ${rawToday}   |   Total Issues: ${tickets.length}${filterBadge}`;
+    subtitleCell.font = { name: 'Segoe UI', size: 10, italic: true, color: { argb: 'FF64748B' } }; // Slate 500
+    subtitleCell.alignment = { vertical: 'middle', horizontal: 'left' };
+    subtitleCell.border = { bottom: { style: 'thick', color: { argb: corporateBlue } } };
+
+    let currentRow = 6; // Start grouping below the headers
+
+    const groups = {};
+    tickets.forEach(t => {
+        const prod = t.product_name || 'Other';
+        if (!groups[prod]) groups[prod] = [];
+        groups[prod].push(t);
+    });
+
+    Object.entries(groups).forEach(([productName, rows]) => {
+        // Group Title Ribbon
+        worksheet.mergeCells(currentRow, 2, currentRow, totalCols - 1);
+        const groupTitleCell = worksheet.getCell(currentRow, 2);
+        groupTitleCell.value = `  ${productName.toUpperCase()}  (${rows.length} Tickets)`;
+        groupTitleCell.font = { name: 'Segoe UI', size: 11, bold: true, color: { argb: 'FF1E293B' } }; // Slate 800
+        groupTitleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE2E8F0' } }; // Slate 200
+        groupTitleCell.alignment = { vertical: 'middle', horizontal: 'left' };
+        currentRow++;
+
+        // Table Headers
+        const headerRow = worksheet.getRow(currentRow);
+        headerRow.height = 25;
+        headerRow.values = headers.map(h => h.header);
+
+        for (let col = 2; col <= totalCols - 1; col++) {
+            const cell = headerRow.getCell(col);
+            cell.font = { name: 'Segoe UI', size: 9, bold: true, color: { argb: 'FF475569' } }; // Slate 600
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF8FAFC' } }; // Slate 50
+            cell.alignment = { vertical: 'middle', horizontal: 'center' };
+            cell.border = { bottom: { style: 'thin', color: { argb: 'FFCBD5E1' } }, top: { style: 'thin', color: { argb: 'FFCBD5E1' } } };
+        }
+
+        // Left align specific text-heavy headers
+        const descCol = headers.findIndex(h => h.key === 'issueDesc') + 1;
+        const commCol = headers.findIndex(h => h.key === 'comments') + 1;
+        const assigneeCol = headers.findIndex(h => h.key === 'assignee') + 1;
+        headerRow.getCell(descCol).alignment = { vertical: 'middle', horizontal: 'left' };
+        headerRow.getCell(commCol).alignment = { vertical: 'middle', horizontal: 'left' };
+        currentRow++;
+
+        // Data Rows
+        rows.forEach((t, idx) => {
+            const row = worksheet.getRow(currentRow);
+            const dateStr = t.date ? new Date(t.date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '—';
+
+            const rowData = {
+                'A': '',
+                'sno': idx + 1,
+                'ticket': t.ticket_no || '—',
+                'date': dateStr,
+                'module': t.module || '—',
+                'issueDesc': t.issue_description || '—',
+                'priority': t.priority || '—',
+                'assignee': t.assigned_to || '—',
+                'comments': t.comments || '',
+                'Z': ''
+            };
+            if (!hideTeam) rowData['team'] = t.team || '—';
+            if (!hideStatus) rowData['status'] = t.status_norm || '—';
+
+            row.values = headers.map(h => rowData[h.key]);
+
+            // Priority Colors
+            let priorityColor = 'FF64748B'; // Default Slate 500
+            if (t.priority === 'High') priorityColor = 'FFEF4444'; // Red 500
+            else if (t.priority === 'Medium') priorityColor = 'FFF59E0B'; // Amber 500
+            else if (t.priority === 'Low') priorityColor = 'FF10B981'; // Emerald 500
+
+            // Status Colors
+            let statusColor = 'FF64748B';
+            if (t.status_norm === 'Fixed') statusColor = 'FF10B981';
+            else if (t.status_norm === 'In-Progress (Dev)') statusColor = 'FF3B82F6';
+            else if (t.status_norm === 'Completed (Dev)') statusColor = 'FF8B5CF6';
+            else if (t.status_norm === 'Pre Production') statusColor = 'FF06B6D4';
+            else if (t.status_norm === 'Yet to Start (Dev)') statusColor = 'FFF59E0B';
+
+            for (let col = 2; col <= totalCols - 1; col++) {
+                const cell = row.getCell(col);
+                cell.font = { name: 'Segoe UI', size: 10, color: { argb: 'FF334155' } }; // Slate 700
+                cell.alignment = { vertical: 'top', horizontal: 'center' };
+                cell.border = { bottom: { style: 'hair', color: { argb: 'FFE2E8F0' } } }; // Slate 200
+            }
+
+            // Text heavy left blocks
+            row.getCell(descCol).alignment = { vertical: 'top', horizontal: 'left', wrapText: true };
+            row.getCell(commCol).alignment = { vertical: 'top', horizontal: 'left', wrapText: true };
+
+            // Wrap text for assigned column
+            row.getCell(assigneeCol).alignment = { vertical: 'top', horizontal: 'center', wrapText: true };
+
+            // Special Colored Styling
+            if (!hideStatus) {
+                const statusColIdx = headers.findIndex(h => h.key === 'status') + 1;
+                const statusCell = row.getCell(statusColIdx);
+                statusCell.alignment = { vertical: 'top', horizontal: 'center' };
+                statusCell.font = { name: 'Segoe UI', size: 10, bold: true, color: { argb: statusColor } };
+            }
+
+            const priorityColIdx = headers.findIndex(h => h.key === 'priority') + 1;
+            const priorityCell = row.getCell(priorityColIdx);
+            priorityCell.alignment = { vertical: 'top', horizontal: 'center' };
+            priorityCell.font = { name: 'Segoe UI', size: 10, bold: true, color: { argb: priorityColor } };
+
+            currentRow++;
+        });
+
+        // Extra spacing between groups
+        currentRow += 2;
+    });
+
+    const buffer = await workbook.xlsx.writeBuffer();
+    const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `Tickets_Report_${new Date().toISOString().split('T')[0]}.xlsx`;
+    a.click();
+    window.URL.revokeObjectURL(url);
+}
+
 // ── Main Page Component ───────────────────────────────────────────────────────
 export default function TicketsPage() {
     const location = useLocation();
@@ -194,6 +481,10 @@ export default function TicketsPage() {
     const [totalPages, setTotalPages] = useState(1);
     const [loading, setLoading] = useState(true);
 
+    const [exporting, setExporting] = useState(false);
+    const [exportModal, setExportModal] = useState(false);
+    const [exportConfig, setExportConfig] = useState({ format: 'excel', orientation: 'landscape' });
+
     // ── Sync draft inputs when URL changes ────────────────────────────────────
     // Scenario: user is on page 2 with team=API, hits browser back button
     // URL changes to previous state → this effect runs → inputs update to match
@@ -240,6 +531,36 @@ export default function TicketsPage() {
             console.log(`Error from /tickets: ${error}`);
         }
         finally { setLoading(false); }
+    };
+
+    // ── Export Logic ────────────────────────────────────────────────────────────
+    const executeExport = async () => {
+        setExporting(true);
+        try {
+            // Fetch ALL matching records (no pagination) for Export
+            const params = { export: 'true' };
+            if (applied.search) params.search = applied.search;
+            if (applied.team) params.team = applied.team;
+            if (applied.product) params.product = applied.product;
+            if (applied.status) params.status = applied.status;
+            if (applied.priority) params.priority = applied.priority;
+            if (applied.missing) params.missing = applied.missing;
+            if (applied.date_from) params.date_from = applied.date_from;
+            if (applied.date_to) params.date_to = applied.date_to;
+
+            const res = await getTickets(params);
+
+            if (exportConfig.format === 'word') {
+                await exportToWord(res.data.tickets, exportConfig.orientation);
+            } else {
+                await exportToExcel(res.data.tickets, applied);
+            }
+            setExportModal(false);
+        } catch (err) {
+            console.error('Export failed:', err);
+        } finally {
+            setExporting(false);
+        }
     };
 
     // ── Auto-fetch when URL changes ───────────────────────────────────────────
@@ -334,14 +655,64 @@ export default function TicketsPage() {
         <div className="space-y-4">
 
             {/* Header */}
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between flex-wrap gap-3">
                 <div>
                     <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
                         Tickets
                     </h1>
                     <p className="text-sm text-gray-400">{total} total tickets</p>
                 </div>
+
+                <button
+                    onClick={() => setExportModal(true)}
+                    disabled={exporting || total === 0}
+                    className="flex items-center gap-2 px-4 py-2 bg-green-600
+                        hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed
+                        text-white text-sm font-medium rounded-lg transition-colors">
+                    <FileDown size={15} /> Export Report
+                </button>
             </div>
+
+            {/* ── Export Modal ── */}
+            {exportModal && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+                    <div className="bg-white dark:bg-gray-800 rounded-xl shadow-xl max-w-sm w-full overflow-hidden border border-gray-100 dark:border-gray-700">
+                        <div className="p-4 border-b border-gray-100 dark:border-gray-700 flex justify-between items-center">
+                            <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Export Options</h2>
+                            <button onClick={() => setExportModal(false)} className="text-gray-400 hover:text-gray-600"><X size={18} /></button>
+                        </div>
+                        <div className="p-4 space-y-4">
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Format</label>
+                                <div className="flex gap-2">
+                                    <button onClick={() => setExportConfig({ ...exportConfig, format: 'excel' })} className={`flex-1 py-1.5 text-sm rounded-lg border font-medium transition-colors ${exportConfig.format === 'excel' ? 'bg-blue-50 border-blue-600 text-blue-600' : 'border-gray-300 text-gray-600 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300'}`}>Excel (XLSX)</button>
+                                    <button onClick={() => setExportConfig({ ...exportConfig, format: 'word' })} className={`flex-1 py-1.5 text-sm rounded-lg border font-medium transition-colors ${exportConfig.format === 'word' ? 'bg-blue-50 border-blue-600 text-blue-600' : 'border-gray-300 text-gray-600 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300'}`}>Word (DOCX)</button>
+                                </div>
+                            </div>
+                            {exportConfig.format === 'word' && (
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Orientation</label>
+                                    <div className="flex gap-2">
+                                        <button onClick={() => setExportConfig({ ...exportConfig, orientation: 'landscape' })} className={`flex-1 py-1.5 text-sm rounded-lg border font-medium transition-colors ${exportConfig.orientation === 'landscape' ? 'bg-indigo-50 border-indigo-600 text-indigo-600' : 'border-gray-300 text-gray-600 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300'}`}>Landscape</button>
+                                        <button onClick={() => setExportConfig({ ...exportConfig, orientation: 'portrait' })} className={`flex-1 py-1.5 text-sm rounded-lg border font-medium transition-colors ${exportConfig.orientation === 'portrait' ? 'bg-indigo-50 border-indigo-600 text-indigo-600' : 'border-gray-300 text-gray-600 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300'}`}>Portrait</button>
+                                    </div>
+                                </div>
+                            )}
+                            <div className="p-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg">
+                                <p className="text-xs text-amber-700 dark:text-amber-400">
+                                    The downloaded report will automatically group the tickets by application/product name.
+                                </p>
+                            </div>
+                        </div>
+                        <div className="p-4 bg-gray-50 dark:bg-gray-800/50 flex justify-end gap-3 border-t border-gray-100 dark:border-gray-700">
+                            <button onClick={() => setExportModal(false)} className="px-4 py-2 text-sm text-gray-600 dark:text-gray-300 font-medium hover:text-gray-900 dark:hover:text-white transition-colors">Cancel</button>
+                            <button onClick={executeExport} disabled={exporting} className="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg flex items-center gap-2 transition-colors">
+                                {exporting ? <><Loader2 size={14} className="animate-spin" /> Generating...</> : 'Confirm Export'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {/* Filters */}
             <div className="bg-white dark:bg-gray-800 rounded-xl p-4 shadow-sm
