@@ -42,6 +42,8 @@ router.get('/', verifyToken, async (req, res) => {
             params.push(`%${search}%`);
             i++;
         }
+
+        // ── Created date filter ───────────────────────────────────────────────
         if (req.query.date_from) {
             if (req.query.date_to) {
                 conditions.push(`date BETWEEN $${i} AND $${i + 1}`);
@@ -52,13 +54,51 @@ router.get('/', verifyToken, async (req, res) => {
                 params.push(req.query.date_from);
             }
         }
+
+        // ── Fixed date filter ─────────────────────────────────────────────────
+        // Used by the Live Moved Tickets page to filter by when ticket was fixed
+        if (req.query.fixed_date_from) {
+            if (req.query.fixed_date_to) {
+                conditions.push(`fixed_date BETWEEN $${i} AND $${i + 1}`);
+                params.push(req.query.fixed_date_from, req.query.fixed_date_to);
+                i += 2;
+            } else {
+                conditions.push(`fixed_date = $${i++}`);
+                params.push(req.query.fixed_date_from);
+            }
+        }
+
         if (req.query.missing === 'true') {
-            conditions.push(`last_seen_date < (
-                SELECT MAX(snapshot_date) FROM report_snapshots
+            conditions.push(`last_seen_date::date < (
+                SELECT MAX(snapshot_date::date) FROM report_snapshots
             )`);
         }
 
         const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
+
+        // ── Export mode — bypass pagination ───────────────────────────────────
+        // Pass export=true or limit=all to fetch all records for PDF export
+        // Export orders by product_name then fixed_date for PDF grouping
+        const isExport = req.query.export === 'true' || req.query.limit === 'all';
+
+        if (isExport) {
+            const data = await pool.query(
+                `SELECT *,
+                    CASE WHEN last_seen_date < (
+                        SELECT MAX(snapshot_date) FROM report_snapshots
+                    ) THEN true ELSE false END as is_missing
+                FROM tickets ${where}
+                ORDER BY product_name ASC, fixed_date ASC, ticket_no ASC`,
+                params
+            );
+            return res.json({
+                tickets: data.rows,
+                total: data.rows.length,
+                page: 1,
+                totalPages: 1,
+            });
+        }
+
         const offset = (page - 1) * limit;
 
         const dataQuery = `
@@ -66,8 +106,7 @@ router.get('/', verifyToken, async (req, res) => {
             CASE WHEN last_seen_date < (
                 SELECT MAX(snapshot_date) FROM report_snapshots
             ) THEN true ELSE false END as is_missing 
-        FROM tickets
-        ${where}
+        FROM tickets ${where}
         ORDER BY date DESC, ticket_no DESC
         LIMIT $${i} OFFSET $${i + 1}
         `;
@@ -110,25 +149,19 @@ router.get('/summary', verifyToken, async (req, res) => {
             `),
             pool.query(`
                 SELECT team, status_norm, COUNT(*) AS count
-                FROM tickets
-                ${teamWhere}
-                GROUP BY team, status_norm
-                ORDER BY team, status_norm
+                FROM tickets ${teamWhere}
+                GROUP BY team, status_norm ORDER BY team, status_norm
             `),
             pool.query(`
                 SELECT product_name, status_norm, COUNT(*) AS count
-                FROM tickets
-                ${teamWhere}
-                GROUP BY product_name, status_norm
-                ORDER BY product_name, status_norm
+                FROM tickets ${teamWhere}
+                GROUP BY product_name, status_norm ORDER BY product_name, status_norm
             `),
             pool.query(`
-                SELECT priority, COUNT(*) AS count
-                FROM tickets
+                SELECT priority, COUNT(*) AS count FROM tickets
                 ${teamWhere ? teamWhere + ' AND' : 'WHERE'}
                     priority IS NOT NULL AND priority != ''
-                GROUP BY priority
-                ORDER BY count DESC
+                GROUP BY priority ORDER BY count DESC
             `),
         ]);
 
@@ -146,9 +179,7 @@ router.get('/summary', verifyToken, async (req, res) => {
 // ── GET /api/tickets/archive ──────────────────────────────────────────────────
 router.get('/archive', verifyToken, async (req, res) => {
     try {
-        const result = await pool.query(
-            'SELECT * FROM archive ORDER BY archived_at DESC'
-        );
+        const result = await pool.query('SELECT * FROM archive ORDER BY archived_at DESC');
         res.json(result.rows);
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -171,8 +202,7 @@ router.get('/changes', verifyToken, async (req, res) => {
 router.get('/:id/history', verifyToken, async (req, res) => {
     try {
         const ticket = await pool.query(
-            'SELECT ticket_no, team FROM tickets WHERE id = $1',
-            [req.params.id]
+            'SELECT ticket_no, team FROM tickets WHERE id = $1', [req.params.id]
         );
         if (!ticket.rows.length)
             return res.status(404).json({ error: 'Ticket not found.' });
@@ -267,13 +297,7 @@ router.put('/:id', verifyToken, editorOrAdmin, async (req, res) => {
                 INSERT INTO ticket_status_history
                     (ticket_no, old_status, new_status, changed_date, method, changed_by)
                 VALUES ($1, $2, $3, $4, 'manual', $5)
-            `, [
-                ticket.ticket_no,
-                ticket.status_norm,
-                newStatus,
-                today,
-                req.user.name,
-            ]);
+            `, [ticket.ticket_no, ticket.status_norm, newStatus, today, req.user.name]);
 
             // Recompute snapshot for today
             await computeSnapshot(client, today);
@@ -328,33 +352,26 @@ router.put('/:id', verifyToken, editorOrAdmin, async (req, res) => {
 // ── computeSnapshot ───────────────────────────────────────────────────────────
 async function computeSnapshot(client, date) {
     const statusResult = await client.query(`
-        SELECT
-            t.ticket_no,
-            t.product_name,
-            t.team,
+        SELECT t.ticket_no, t.product_name, t.team,
             COALESCE(h.new_status, t.status_norm) AS current_status
         FROM tickets t
         LEFT JOIN LATERAL (
-            SELECT new_status
-            FROM ticket_status_history
-            WHERE ticket_no = t.ticket_no
-              AND changed_date <= $1
-            ORDER BY changed_date DESC, created_at DESC
-            LIMIT 1
+            SELECT new_status FROM ticket_status_history
+            WHERE ticket_no = t.ticket_no AND changed_date <= $1
+            ORDER BY changed_date DESC, created_at DESC LIMIT 1
         ) h ON true
         WHERE t.status_norm IS NOT NULL
     `, [date]);
 
-    const combosResult = await client.query(`
-        SELECT DISTINCT product_name, team FROM tickets
-    `);
+    const combosResult = await client.query(
+        `SELECT DISTINCT product_name, team FROM tickets`
+    );
 
     const grid = {};
     combosResult.rows.forEach(c => {
         const key = `${c.product_name}_${c.team}`;
         grid[key] = {
-            product_name: c.product_name,
-            team: c.team,
+            product_name: c.product_name, team: c.team,
             yet_to_start: 0, in_progress: 0, completed_dev: 0,
             pre_production: 0, live_move: 0, closed: 0, total_active: 0,
         };
@@ -375,8 +392,7 @@ async function computeSnapshot(client, date) {
 
     const newResult = await client.query(`
         SELECT product_name, team, COUNT(*) as cnt
-        FROM tickets WHERE date = $1
-        GROUP BY product_name, team
+        FROM tickets WHERE date = $1 GROUP BY product_name, team
     `, [date]);
 
     const newMap = {};
@@ -390,19 +406,12 @@ async function computeSnapshot(client, date) {
             INSERT INTO report_snapshots (
                 snapshot_date, product_name, team,
                 yet_to_start, in_progress, completed_dev,
-                pre_production, live_move, closed,
-                new_tickets, total_active
+                pre_production, live_move, closed, new_tickets, total_active
             ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
-            ON CONFLICT (snapshot_date, product_name, team)
-            DO UPDATE SET
-                yet_to_start   = $4,
-                in_progress    = $5,
-                completed_dev  = $6,
-                pre_production = $7,
-                live_move      = $8,
-                closed         = $9,
-                new_tickets    = $10,
-                total_active   = $11
+            ON CONFLICT (snapshot_date, product_name, team) DO UPDATE SET
+                yet_to_start = $4, in_progress = $5, completed_dev = $6,
+                pre_production = $7, live_move = $8, closed = $9,
+                new_tickets = $10, total_active = $11
         `, [
             date, g.product_name, g.team,
             g.yet_to_start, g.in_progress, g.completed_dev,
@@ -411,8 +420,6 @@ async function computeSnapshot(client, date) {
         ]);
     }
 }
-
-module.exports = router;
 
 module.exports = router;
 
