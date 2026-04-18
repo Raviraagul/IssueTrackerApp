@@ -13,6 +13,7 @@ import UsersPage from './pages/UsersPage';
 
 import DailyMovementPage from './pages/DailyMovementPage';
 import TicketDetailPage from './pages/TicketDetailPage';
+import LiveMovedTicketsPage from './pages/LiveMovedTicketsPage';
 
 export default function App() {
   return (
@@ -39,6 +40,12 @@ export default function App() {
           <Route path="/tickets" element={
             <ProtectedRoute>
               <Layout><TicketsPage /></Layout>
+            </ProtectedRoute>
+          } />
+
+          <Route path="/live-moved" element={
+            <ProtectedRoute>
+              <Layout><LiveMovedTicketsPage /></Layout>
             </ProtectedRoute>
           } />
 
