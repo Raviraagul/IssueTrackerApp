@@ -104,6 +104,32 @@ router.post('/upload', verifyToken, adminOnly,
             // const { tickets, archived, changes, snapshots, stats } = result;
             const { tickets, changes, history, missing } = result;
             // console.log('New tickets from Python:', tickets.filter(t => t.sync_status === 'New').map(t => t.ticket_no));
+
+            // ── LOG DUPLICATES ──────────────────────────────────────────────────────────
+            /* const seenTickets = new Map(); // Key: ticket_no, Value: team_name
+            const duplicates = [];
+
+            tickets.forEach(t => {
+                if (seenTickets.has(t.ticket_no)) {
+                    duplicates.push({
+                        ticket_no: t.ticket_no,
+                        firstTeam: seenTickets.get(t.ticket_no),
+                        duplicateTeam: t.team
+                    });
+                } else {
+                    seenTickets.set(t.ticket_no, t.team);
+                }
+            });
+
+            if (duplicates.length > 0) {
+                console.log('\x1b[33m%s\x1b[0m', '--- DUPLICATE TICKETS DETECTED IN EXCEL ---');
+                duplicates.forEach(d => {
+                    console.log(`⚠️  Ticket [${d.ticket_no}] found in both '${d.firstTeam}' and '${d.duplicateTeam}'`);
+                });
+                console.log('\x1b[33m%s\x1b[0m', '-------------------------------------------');
+            } */
+            // ─────────────────────────────────────────────────────────────────────────────
+
             // ── Save to DB in a transaction ───────────────────────────────────────
             const client = await pool.connect();
             try {
@@ -138,24 +164,34 @@ router.post('/upload', verifyToken, adminOnly,
                         newCount++;
                     } else {
                         // Update existing
-                        await client.query(`
+                        const ticketQuery = `
                         UPDATE tickets SET
                             date=$2, company=$3, product_name=$4, platform=$5,
                             team=$6, module=$7, sub_module=$8, issue_description = COALESCE($9, issue_description),
                             priority=$10, status_raw=$11, status_norm=$12,
                             assigned_to = COALESCE($13, assigned_to), comments = COALESCE(comments, $14),
-                            fixed_status=$15, fixed_date = COALESCE(fixed_date, $16), status_changed_date=$17,
+                            fixed_status=$15, fixed_date = COALESCE($16, fixed_date), status_changed_date=$17,
                             last_seen_date=$18,
                             sync_status='Updated', last_updated=NOW()
                         WHERE ticket_no=$1
-                        `, [
+                        `;
+
+                        const params = [
                             t.ticket_no, t.date, t.company, t.product_name, t.platform,
                             t.team, t.module, t.sub_module, t.issue_description, t.priority,
                             t.status_raw, t.status_norm, t.assigned_to, t.comments,
                             t.fixed_status, t.fixed_date, t.status_changed_date,
                             t.last_seen_date,
-                        ]);
+                        ];
+
+                        // if (t.ticket_no == '2026012902') {
+                        //     console.log(`Update Query: ${ticketQuery}`);
+                        //     console.log(`Update Params: ${params}`);
+                        // }
+
+                        await client.query(ticketQuery, params);
                         updatedCount++;
+
                     }
                 }
 
